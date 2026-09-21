@@ -432,6 +432,7 @@ export function apply(ctx: Context, config: Config): void {
           inputTokens: { type: 'number' },
           outputTokens: { type: 'number' },
           cacheReadTokens: { type: 'number' },
+          truncated: { type: 'boolean' },
         },
       },
     },
@@ -439,11 +440,11 @@ export function apply(ctx: Context, config: Config): void {
       const fail = (reason: string): {
         ok: boolean; reason: string; session: string; turn: number; text: string; manifestHash: string;
         manifestPath: string; a1Ok: boolean; a1Detail: string; requestChars: number; messages: number;
-        inputTokens: number; outputTokens: number; cacheReadTokens: number;
+        inputTokens: number; outputTokens: number; cacheReadTokens: number; truncated: boolean;
       } => ({
         ok: false, reason, session: args.session, turn: 0, text: '', manifestHash: '', manifestPath: '',
         a1Ok: false, a1Detail: '', requestChars: 0, messages: 0,
-        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, truncated: false,
       })
 
       let stateArg: Record<string, unknown> | undefined
@@ -480,6 +481,7 @@ export function apply(ctx: Context, config: Config): void {
         inputTokens: result.usage.inputTokens,
         outputTokens: result.usage.outputTokens,
         cacheReadTokens: result.usage.cacheReadTokens,
+        truncated: result.truncated,
       }
     },
   }))

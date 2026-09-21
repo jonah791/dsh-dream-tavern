@@ -210,6 +210,8 @@ export function createTavernPanel(deps: TurnDeps): PanelContribution {
               cacheReadTokens: result.usage.cacheReadTokens,
               inputTokens: result.usage.inputTokens,
               outputTokens: result.usage.outputTokens,
+              /** 思维链也算进 maxTokens：截断必须显式报出，不许静默。 */
+              truncated: result.truncated,
             },
           };
         },

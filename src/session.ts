@@ -52,6 +52,13 @@ export interface TurnResult {
   reason: string;
   turn: number;
   text: string;
+  /**
+   * 输出被 `maxTokens` 截断（`outputTokens >= maxTokens`）。
+   *
+   * ⚠ 2026-09-22 实测：**推理模型的思维链也算进 maxTokens**——上限 1600 时正文只剩 195 字
+   * 就断了，而 usage 显示 1600（预算被思维链吃掉）。截断必须显式报出，不许静默。
+   */
+  truncated: boolean;
   manifest: Manifest | null;
   manifestPath: string;
   /** A1: the body rebuilt from the persisted manifest equals the body we sent. */
@@ -94,7 +101,7 @@ export async function resolveLorebook(
 /** Run one prose turn end to end. Returns the text plus every reading A1/A4 need. */
 export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<TurnResult> {
   const fail = (reason: string): TurnResult => ({
-    ok: false, reason, turn: 0, text: '', manifest: null, manifestPath: '',
+    ok: false, reason, turn: 0, text: '', truncated: false, manifest: null, manifestPath: '',
     a1Ok: false, a1Detail: '', requestChars: 0, messages: 0, usage: { ...EMPTY_USAGE },
   });
 
@@ -140,6 +147,7 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
     reason: '',
     turn,
     text: completion.text,
+    truncated: completion.usage.outputTokens >= deps.maxTokens,
     manifest,
     manifestPath,
     a1Ok: verify.ok,
