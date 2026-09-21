@@ -11,6 +11,7 @@
  * 2026-09-22 立：主人「9 点前要成品，全方位超越 flizzywine/dsh-tavern」+「全部自持」。
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createAssistantMessage, createMessage, createUserMessage } from '@deepseek-ai/dsh-llm/message'
@@ -44,17 +45,22 @@ export interface Config {
 
 export const Config = z.object({
   enabled: z.boolean().default(true),
-  dataDir: z.string().default('E:/alice/tavern/dream-tavern-data'),
-  cardDirs: z.array(z.string()).default([
-    'C:/Users/tr/AppData/Roaming/com.tauritavern.client/data/default-user/characters',
-  ]),
-  worldbookDirs: z.array(z.string()).default([
-    'C:/Users/tr/AppData/Roaming/com.tauritavern.client/data/default-user/worlds',
-  ]),
-  provider: z.string().default('command'),
-  model: z.string().default('deepseek/deepseek-v4.1-flash'),
+  /**
+   * Where we write. Empty ⇒ resolved at load to `<DSH_HOME>/dream-tavern-data`.
+   * 部署相关取值一律走配置，代码里不留任何一台机器的路径（宿主公约：插件不得硬编码可调项；
+   * 且默认值若写死某个人的目录，公开仓库就会连带泄漏他的本机路径）。
+   */
+  dataDir: z.string().default(''),
+  /** Read-only character card libraries（ST `characters/` 目录）。空 ⇒ 无卡可玩，工具会如实报 0。 */
+  cardDirs: z.array(z.string()).default([]),
+  /** Read-only world book libraries（ST `worlds/` 目录）。 */
+  worldbookDirs: z.array(z.string()).default([]),
+  /** Model route; empty ⇒ fail loud on the first turn rather than guess a provider. */
+  provider: z.string().default(''),
+  model: z.string().default(''),
   maxTokens: z.number().default(1600),
   temperature: z.number().default(0.9),
+  /** Hard character budget for one assembled request. */
   budgetChars: z.number().default(24000),
 })
 
@@ -97,11 +103,24 @@ function toHarnessMessages(messages: ChatMessage[], provider: string, model: str
 
 export function apply(ctx: Context, config: Config): void {
   const logger = ctx.logger(PLUGIN)
-  const store = new Store({
-    dataDir: config.dataDir,
-    cardDirs: config.cardDirs,
-    worldDirs: config.worldbookDirs,
-  })
+
+  /** Explicit resolve step: the config carries either a deployment value or nothing. */
+  const dataDir = config.dataDir.trim().length > 0
+    ? config.dataDir.trim()
+    : join(process.env['DSH_HOME'] ?? '.', 'dream-tavern-data')
+
+  const cardDirs = config.cardDirs.filter((d) => d.trim().length > 0)
+  const worldDirs = config.worldbookDirs.filter((d) => d.trim().length > 0)
+  const store = new Store({ dataDir, cardDirs, worldDirs })
+  if (cardDirs.length === 0) {
+    logger.warn('未配置 cardDirs：卡库为空，tavern_cards 会如实报 0（请在 cordis.yml 里指向 ST characters/ 目录）')
+  }
+  if (worldDirs.length === 0) {
+    logger.warn('未配置 worldbookDirs：世界书库为空（tavern_worldbooks 会如实报 0）')
+  }
+  if (config.provider.trim().length === 0 || config.model.trim().length === 0) {
+    logger.warn('未配置 provider/model：tavern_play 会在第一轮响亮失败（不猜默认模型）')
+  }
   const preset = (): Preset => defaultPreset(config.budgetChars)
 
   /**
@@ -109,6 +128,10 @@ export function apply(ctx: Context, config: Config): void {
    * 工具、面板、三个 Agent 全部经过这里——没有第二条通往模型的路。
    */
   const complete: Completer = async (messages, options) => {
+    if (config.provider.trim().length === 0 || config.model.trim().length === 0) {
+      // fail loud：不猜默认模型——猜错会静默改变研究结论的可比性
+      throw new Error('未配置 provider/model：请在 cordis.yml 的 agent-dream-tavern.config 里指定')
+    }
     const harnessMessages = toHarnessMessages(messages, config.provider, config.model)
     let text = ''
     let inputTokens = 0

@@ -43,15 +43,33 @@
 
 ## 配置（cordis.yml）
 
+**代码里的默认值一律为空**——部署相关的取值全部走配置（宿主公约：插件不得硬编码可调项；
+默认值若写死某台机器的目录，公开仓库还会连带泄漏路径）。
+
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `dataDir` | `E:/alice/tavern/dream-tavern-data` | **我们写**的一切（会话/装配单/快照） |
-| `cardDirs` | `.../default-user/characters` | 只读卡库 |
-| `worldbookDirs` | `.../default-user/worlds` | 只读世界书库 |
-| `provider` / `model` | `command` / `deepseek/deepseek-v4.1-flash` | 模型路由 |
+| `dataDir` | `''` | **我们写**的一切（会话/装配单/快照）。空 ⇒ 解析为 `<DSH_HOME>/dream-tavern-data` |
+| `cardDirs` | `[]` | 只读卡库（ST `characters/` 目录）。空 ⇒ 卡库为 0，工具如实报 0 并告警 |
+| `worldbookDirs` | `[]` | 只读世界书库（ST `worlds/` 目录） |
+| `provider` / `model` | `''` | 模型路由。空 ⇒ `tavern_play` **响亮失败**（不猜默认模型） |
+| `maxTokens` | `1600` | 单轮输出上限 |
+| `temperature` | `0.9` | 采样温度 |
 | `budgetChars` | `24000` | 单次请求字符预算（超出按优先级确定性裁剪并记账） |
 
-> ⚠ **迁移源只读**：插件不写回主人的酒馆目录；`secrets.json` 一律不读。
+部署示例（放在 profile patch 里，**不要写进源码**）：
+
+```yaml
+- id: agent-dream-tavern
+  name: dsh-dream-tavern
+  config:
+    dataDir: <你的数据目录>
+    cardDirs: [<你的 ST characters/ 目录>]
+    worldbookDirs: [<你的 ST worlds/ 目录>]
+    provider: <provider>
+    model: <model>
+```
+
+> ⚠ **迁移源只读**：插件不写回酒馆目录；ST 的 `secrets.json` 一律不读。
 
 ## 验收
 

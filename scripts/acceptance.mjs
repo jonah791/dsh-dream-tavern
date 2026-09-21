@@ -23,8 +23,8 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 
-const DEFAULT_CARDS = 'C:/Users/tr/AppData/Roaming/com.tauritavern.client/data/default-user/characters';
-const DEFAULT_WORLDS = 'C:/Users/tr/AppData/Roaming/com.tauritavern.client/data/default-user/worlds';
+const DEFAULT_CARDS = '';
+const DEFAULT_WORLDS = '';
 
 /** Translate `C:/x` into the WSL mount path when not running on Windows. */
 function nativePath(input) {
@@ -69,8 +69,8 @@ function totalBytes(dir, files) {
 console.log('═'.repeat(72));
 console.log('梦境酒馆 · 验收总闸（dsh-dream-tavern）');
 console.log('═'.repeat(72));
-console.log(`  平台 ${process.platform} · 卡库 ${cardsDir}`);
-console.log(`  世界书 ${worldsDir}`);
+console.log(`  平台 ${process.platform} · 卡库 ${cardsDir === '' ? '(未配置)' : cardsDir}`);
+console.log(`  世界书 ${worldsDir === '' ? '(未配置)' : worldsDir}`);
 
 console.log('\n[1/3] 运行判据测试 …\n');
 const run = spawnSync(process.execPath, ['--test', 'tests/*.test.mjs'], {
@@ -95,9 +95,13 @@ console.log('\n[3/3] 真实数据读数');
 const cards = listFiles(cardsDir, '.png');
 const worlds = listFiles(worldsDir, '.json');
 const realDataReachable = cards !== null && worlds !== null;
-if (cards === null) console.log(`  ⚠ 卡库不可达：${cardsDir} —— 真数据判据（A5/迁移实测）将整组跳过`);
+if (cards === null) console.log(cardsDir === ''
+  ? '  卡库：未配置 DREAM_TAVERN_CARDS —— 真数据判据（A5/迁移实测）整组跳过'
+  : `  ⚠ 卡库不可达：${cardsDir} —— 真数据判据（A5/迁移实测）将整组跳过`);
 else console.log(`  卡库：${cards.length} 张 PNG，${(totalBytes(cardsDir, cards) / 1048576).toFixed(1)} MB`);
-if (worlds === null) console.log(`  ⚠ 世界书不可达：${worldsDir} —— 世界书迁移实测将跳过`);
+if (worlds === null) console.log(worldsDir === ''
+  ? '  世界书：未配置 DREAM_TAVERN_WORLDS —— 世界书迁移实测跳过'
+  : `  ⚠ 世界书不可达：${worldsDir} —— 世界书迁移实测将跳过`);
 else console.log(`  世界书：${worlds.length} 本，${(totalBytes(worldsDir, worlds) / 1048576).toFixed(1)} MB`);
 
 const allowed = new Set(['src/assemble.ts', 'src/session.ts', 'src/index.ts']);
