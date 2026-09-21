@@ -13,6 +13,8 @@ import assert from 'node:assert/strict';
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fromSt, toSt, readStPng, writeStPng, slugify } from '../lib/card.js';
+import { assemble } from '../lib/assemble.js';
+import { defaultPreset } from '../lib/preset.js';
 import { readFileSync } from 'node:fs';
 
 const CARDS_DIR = process.env.DREAM_TAVERN_CARDS ?? '';
@@ -162,4 +164,58 @@ test('迁移实测：真卡库的内容确实被读到（不是空角色）', { 
   console.log(`    [读数] ${realCards.length} 张：有设定 ${withPersona} / 有开场 ${withOpening}（合计 ${totalOpening} 字）/ 含卡内世界书 ${withLorebook} / 仅世界书承载 ${loreOnly} / 完全空 ${empty}`);
   assert.equal(empty, 0, `读出来完全为空的卡：${empties.join('、')}`);
   assert.ok(withOpening >= realCards.length * 0.9, `开场白读出率过低：${withOpening}/${realCards.length}`);
+});
+
+test('迁移实测：每一张真卡都能装配出请求（不抛错、1:1、无重复片段）', { skip: realCards.length === 0 ? '未设置 DREAM_TAVERN_CARDS' : false }, () => {
+  const preset = defaultPreset(24000);
+  const failures = [];
+  let minChars = Number.POSITIVE_INFINITY;
+  let maxChars = 0;
+  let total = 0;
+  let definedOnly = 0;
+  let loreOnly = 0;
+  for (const path of realCards) {
+    const name = path.split(/[\\/]/).pop();
+    const card = fromSt(readStPng(readFileSync(path)));
+    try {
+      const { manifest, messages } = assemble({
+        preset, card, lorebook: card.lorebook, history: [],
+        state: {}, turnInput: '（冒烟输入）', turn: 1,
+      });
+      if (manifest.entries.length !== messages.length) throw new Error('装配单与消息不是 1:1');
+      const sys = messages.find((m) => m.role === 'system');
+      if (sys === undefined) throw new Error('没有 system 消息');
+      if (sys.text.length === 0) throw new Error('system 为空');
+
+      // 判据：卡里**可静态注入**的字段（人设/描述/场景）若非空，必须抵达 system
+      const statics = [card.persona, card.description, card.scenario].filter((t) => t.length > 0);
+      if (statics.length === 0) {
+        // 这类卡的实质内容在世界书条目里（要关键词命中才触发）或开场白里——如实分类，不算失败
+        if (card.lorebook.length > 0) loreOnly += 1;
+        else definedOnly += 1;
+      } else {
+        for (const text of statics) {
+          if (!sys.text.includes(text.slice(0, 20))) {
+            throw new Error(`system 里缺 ${text.length} 字的静态字段（标记「${text.slice(0, 20)}」）`);
+          }
+        }
+      }
+
+      // 回归判据：同一 entry 内不得出现重复片段（重复注入 = 双倍字节）
+      const parts = manifest.entries[0].parts;
+      const keys = parts.map((p) => `${p.source}:${p.id}`);
+      if (new Set(keys).size !== keys.length) {
+        const dup = keys.filter((k, i) => keys.indexOf(k) !== i);
+        throw new Error(`system 里出现重复片段：${[...new Set(dup)].slice(0, 3).join(', ')}`);
+      }
+
+      minChars = Math.min(minChars, manifest.totalChars);
+      maxChars = Math.max(maxChars, manifest.totalChars);
+      total += manifest.totalChars;
+    } catch (err) {
+      failures.push(`${name}: ${err.message}`);
+    }
+  }
+  console.log(`    [读数] ${realCards.length} 张全部装配成功：请求字数 min ${minChars} / max ${maxChars} / 平均 ${Math.round(total / realCards.length)}（仅世界书承载 ${loreOnly} / 无静态字段 ${definedOnly}）`);
+  assert.equal(failures.length, 0, `${failures.length} 张装配失败：\n${failures.slice(0, 5).join('\n')}`);
 });

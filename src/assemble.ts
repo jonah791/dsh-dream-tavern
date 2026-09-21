@@ -90,9 +90,12 @@ export function assemble(input: AssembleInput): AssembleResult {
   // 4) script segment (optional main-line anchor)
   if (script && script.segment.length > 0) parts.push(part('script', 'system', 'script', 70, script.segment));
 
-  // 5) lorebook hits — card-owned book first (its entries keep their own ids), then the session's
-  const allLore = [...card.lorebook, ...lorebook];
-  const hits = matchLorebook(allLore, { history, turnInput, turn });
+  // 5) lorebook hits — 条目清单由**调用方唯一给出**（`resolveLorebook` 已合并卡内世界书）。
+  // ⚠ 2026-09-22 冒烟实测：首版在此自行追加 `[...card.lorebook, ...lorebook]`，而调用方
+  // 传入的清单里**已经**含卡内条目 ⇒ 每一轮把整本卡内世界书**注入两遍**
+  // （`parts` 里每个 `lorebook:<id>` 都出现两次，单卡请求被撑到近 20k 字）。
+  // 装配器不得自行加源——多源合并是调用方的职责，这里只按给定清单装。
+  const hits = matchLorebook(lorebook, { history, turnInput, turn });
   for (const hit of hits) {
     parts.push(part(`lore:${hit.entry.id}`, hit.slot, `lorebook:${hit.entry.id}`, hit.priority, hit.entry.content, hit.triggerHit));
   }
