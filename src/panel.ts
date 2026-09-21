@@ -78,7 +78,7 @@ export function createTavernPanel(deps: TurnDeps): PanelContribution {
   return {
     id: 'dream-tavern',
     title: '梦境酒馆',
-    order: 40,
+    order: 35,
     icon: '🎭',
     description: '人物卡文字游戏 + 上下文装配单逐字节可验',
     style: { accent: '#c9a227', density: 'compact' },
@@ -89,8 +89,8 @@ export function createTavernPanel(deps: TurnDeps): PanelContribution {
       const books = await deps.store.scanWorldbooks();
       const history = await deps.store.readHistory(session);
       const state = await deps.store.readState(session);
-      const lastTurn = history.length + 1;
-      const manifest = await deps.store.readManifest(session, Math.max(1, lastTurn - 1));
+      const latest = await deps.store.readLatestManifest(session);
+      const manifest = latest === null ? null : latest.manifest;
 
       const story: string[] = [];
       for (const message of history.slice(-STORY_TAIL)) {
@@ -110,7 +110,9 @@ export function createTavernPanel(deps: TurnDeps): PanelContribution {
               label: '上轮请求',
               value: manifest === null ? '—' : `${manifest.totalChars} 字 / ${manifest.entries.length} 条`,
               tone: manifest !== null && manifest.overBudget ? 'bad' : 'ok',
-              hint: manifest === null ? '本会话还没有装配单' : `hash ${manifest.hash.slice(0, 12)}…`,
+              hint: manifest === null || latest === null
+                ? '本会话还没有装配单'
+                : `第 ${latest.turn} 轮 · hash ${manifest.hash.slice(0, 12)}…`,
             },
           ],
         },
@@ -262,10 +264,14 @@ export function createTavernPanel(deps: TurnDeps): PanelContribution {
         async run(params) {
           const session = asString(params, 'session') || DEFAULT_SESSION;
           const turnRaw = params['turn'];
-          const history = await deps.store.readHistory(session);
-          const fallback = Math.max(1, history.length - 1);
-          const turn = typeof turnRaw === 'number' && Number.isFinite(turnRaw) ? Math.max(1, turnRaw) : fallback;
-          const manifest = await deps.store.readManifest(session, turn);
+          const latest = await deps.store.readLatestManifest(session);
+          const turn = typeof turnRaw === 'number' && Number.isFinite(turnRaw)
+            ? Math.max(1, turnRaw)
+            : (latest === null ? 0 : latest.turn);
+          if (turn === 0) return { ok: false, message: '本会话还没有装配单' };
+          const manifest = turn === (latest === null ? -1 : latest.turn)
+            ? (latest === null ? null : latest.manifest)
+            : await deps.store.readManifest(session, turn);
           if (manifest === null) return { ok: false, message: `第 ${turn} 轮没有装配单` };
           const slotMap = new Map<string, { entries: number; chars: number }>();
           for (const entry of manifest.entries) {

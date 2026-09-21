@@ -185,3 +185,26 @@ test('面板 view：无历史时给出开局指引，有历史时展示正文与
     assert.ok(filled.blocks.some((b) => b.kind === 'metrics'), '应有读数块');
   } finally { f.cleanup(); }
 });
+
+test('readLatestManifest：轮次号不能靠历史长度反推（开场 1 条 + 每轮 2 条）', async () => {
+  const f = fixture();
+  try {
+    assert.equal(await f.store.readLatestManifest('lm'), null, '空会话没有装配单');
+    const first = await runTurn(f.deps, { session: 'lm', cardId: 'test-card', input: '第一轮。' });
+    assert.equal(first.turn, 2);
+    let latest = await f.store.readLatestManifest('lm');
+    assert.equal(latest.turn, 2, '第一张装配单是第 2 轮（历史此刻 3 条，不是 2）');
+    await runTurn(f.deps, { session: 'lm', cardId: 'test-card', input: '第二轮。' });
+    latest = await f.store.readLatestManifest('lm');
+    assert.equal(latest.turn, 4, '第 4 轮');
+    assert.equal((await f.store.readHistory('lm')).length, 5, '历史 5 条 —— 与轮次号不成线性');
+
+    // 面板读数必须取到最新那张，而不是算出来的错号
+    const panel = createTavernPanel(f.deps);
+    const view = await panel.view({ session: 'lm' });
+    const metrics = view.blocks.find((b) => b.kind === 'metrics');
+    const req = metrics.items.find((i) => i.label === '上轮请求');
+    assert.notEqual(req.value, '—', '上轮请求必须有读数');
+    assert.ok(String(req.hint).includes('第 4 轮'), `读数应指向第 4 轮，实际 ${req.hint}`);
+  } finally { f.cleanup(); }
+});

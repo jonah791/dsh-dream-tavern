@@ -185,6 +185,28 @@ export class Store {
   }
 
   /**
+   * The most recent manifest on disk.
+   *
+   * ⚠ 2026-09-22 实测教训：轮次号**不是** `history.length` 的线性函数（开场占 1 条、
+   * 每轮追加 2 条），所以「用历史长度反推上一次是第几轮」会算错，面板因此把
+   * 「上轮请求」显示成「—」。改为直接扫 `manifests/` 目录取最大编号——不靠推算。
+   */
+  async readLatestManifest(sessionId: string): Promise<{ turn: number; manifest: Manifest } | null> {
+    const dir = join(this.sessionDir(sessionId), 'manifests');
+    try {
+      const names = (await readdir(dir)).filter((n) => n.endsWith('.json')).sort();
+      const last = names.at(-1);
+      if (last === undefined) return null;
+      const turn = Number(last.replace(/\.json$/, ''));
+      if (!Number.isFinite(turn)) return null;
+      const manifest = JSON.parse(await readFile(join(dir, last), 'utf8')) as Manifest;
+      return { turn, manifest };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Atomic rollback: restore history + state to the snapshot taken at `turn`.
    * Both files are rewritten together; a missing snapshot fails loudly.
    */
