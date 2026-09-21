@@ -5,8 +5,8 @@
  * 卡库路径由环境变量 `DREAM_TAVERN_CARDS` 提供，未设置时整组跳过（不假绿）。
  *
  * 跑法：
- *   DREAM_TAVERN_CARDS="/mnt/c/Users/tr/AppData/Roaming/com.tauritavern.client/data/default-user/characters" \
- *     node --test tests/card.test.mjs
+ *   DREAM_TAVERN_CARDS="<你的 ST characters/ 目录>" node --test tests/card.test.mjs
+ *   （WSL 下用 /mnt/c/... 形式；Windows 下用 C:/... 形式）
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
