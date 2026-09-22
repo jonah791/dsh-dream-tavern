@@ -73,9 +73,12 @@ export function assemble(input: AssembleInput): AssembleResult {
   // 只是摘要字段。2026-09-22 实测：只注入 persona 时，一张 description=2844 字的卡
   // 装配出来只有 1146 字——主定义整段丢失。
   if (card.description.length > 0) parts.push(part('card:description', 'system', 'card:description', 99, card.description));
-  if (card.persona.length > 0) parts.push(part('card:persona', 'persona_prefix', 'card', 100, card.persona));
+  // ⚠ `source` 必须是**身份**（能唯一指认一段内容）：2026-09-22 质量判据（no-duplicate）第一次跑就抓到
+  // persona 与 scenario 共用裸 `'card'` ⇒ 两个**不同**字段看起来像「同一来源被注入两遍」。
+  // 同族标签里 preset 用 `preset:<blockId>`、lorebook 用 `lorebook:<id>`，card 也应细到字段。
+  if (card.persona.length > 0) parts.push(part('card:persona', 'persona_prefix', 'card:persona', 100, card.persona));
   if (card.systemPrompt.length > 0) parts.push(part('card:sysprompt', 'system', 'card:system_prompt', 98, card.systemPrompt));
-  if (card.scenario.length > 0) parts.push(part('card:scenario', 'system', 'card', 90, card.scenario));
+  if (card.scenario.length > 0) parts.push(part('card:scenario', 'system', 'card:scenario', 90, card.scenario));
   // 对话样例只作文风参考，且必须在文本里说清楚它不是当前剧情（否则会被当成已发生的事）
   if (card.exampleDialogue.length > 0) {
     parts.push(part(
