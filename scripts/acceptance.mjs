@@ -5,15 +5,21 @@
  * 设计取向：**测试是唯一真源**，本脚本不重复实现判据，只做三件测试做不到的事：
  *  ① 把测试名映射回判据编号（A1…A7），让「哪条判据被测到」可核对；
  *  ② 报告真实数据规模，并在数据**不可达**时响亮降级（而不是静默跳过）；
- *  ③ 静态检查「有没有第二条通往模型的装配路径」（A7 的旁路面）。
+ *  ③ 静态检查「有没有第二条通往模型的装配路径」（A7 旁路面）。
  *
  * ⚠ 平台纪律（2026-09-22 实测）：默认路径是 Windows 形式；在 WSL 里跑会**不可达**，
  * 于是真数据判据整组跳过、PASS 静默降强。本脚本因此显式换算路径，并把跳过计入裁决。
  *
+ * ⚠ 仪器纪律（2026-09-22 实测修复）：**「测试器没起来」必须与「判据失败」分开报**。
+ * 原先 `spawnSync(..., { shell: true })` 让命令经 cmd.exe，而 `process.execPath` 在 Windows 是
+ * `C:\Program Files\nodejs\node.exe` —— **路径里的空格被 cmd 拆开**，进程起不来；
+ * 又因 `run.status ?? 1` 把 `null` 映射成 1，于是「仪器起不来」被误报成「判据失败」（退出码 1）。
+ * 现在：不借 shell（node 的 `--test` 自己展开 glob），且 `run.error` 单独判 ⇒ 退出码 3。
+ *
  * 跑法：
  *   node scripts/acceptance.mjs
  *   DREAM_TAVERN_CARDS=... DREAM_TAVERN_WORLDS=... node scripts/acceptance.mjs
- * 退出码：0 = 全判据通过且真数据可达；1 = 测试失败；2 = 测试通过但真数据不可达。
+ * 退出码：0 = 全判据通过且真数据可达；1 = 测试失败；2 = 测试通过但真数据不可达；3 = 测试器未能启动（仪器问题）。
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
@@ -39,6 +45,11 @@ const worldsDir = nativePath(process.env.DREAM_TAVERN_WORLDS ?? DEFAULT_WORLDS);
 
 const env = { ...process.env, DREAM_TAVERN_CARDS: cardsDir, DREAM_TAVERN_WORLDS: worldsDir };
 
+const TEST_SOURCES = [
+  'tests/assemble.test.mjs', 'tests/card.test.mjs', 'tests/lorebook.test.mjs',
+  'tests/session.test.mjs', 'tests/worldbook.test.mjs',
+];
+
 /** 判据 → 覆盖它的测试名片段（用于回答「这条判据到底被测到没有」）。 */
 const CRITERIA = [
   ['A1', '装配单即事实（逐字节可重建）', ['A1 条目与消息 1:1', 'A1 篡改实际请求', 'A1 少发一条']],
@@ -50,8 +61,15 @@ const CRITERIA = [
   ['A7', '各路径共用装配器（无旁路）', ['A7：面板动作与工具走同一条装配路径']],
 ];
 
-/** 依赖真数据的判据：数据不可达时这组会整组跳过，裁决强度必须随之降级。 */
-const REALDATA_TESTS = 4;
+/**
+ * 依赖真数据的判据条数：**从测试源码数**，不写死。
+ * 写死会腐化（2026-09-22 实测：常量写 4，实际跳过 5 —— 4 张卡 + 1 世界书）。
+ */
+const testSource = TEST_SOURCES
+  .filter((p) => existsSync(join(root, p)))
+  .map((p) => readFileSync(join(root, p), 'utf8'))
+  .join('\n');
+const realDataTestCount = (testSource.match(/\{\s*skip:/g) ?? []).length;
 
 function listFiles(dir, ext) {
   if (!existsSync(dir)) return null;
@@ -73,16 +91,15 @@ console.log(`  平台 ${process.platform} · 卡库 ${cardsDir === '' ? '(未配
 console.log(`  世界书 ${worldsDir === '' ? '(未配置)' : worldsDir}`);
 
 console.log('\n[1/3] 运行判据测试 …\n');
+// ⚠ 不借 shell：`process.execPath` 含空格时会被 cmd.exe 拆开（见文件头「仪器纪律」）。
+// node 的 `--test` 自己展开 glob —— 与本仓 `npm test` 同一写法。
 const run = spawnSync(process.execPath, ['--test', 'tests/*.test.mjs'], {
-  cwd: root, env, stdio: 'inherit', shell: true,
+  cwd: root, env, stdio: 'inherit',
 });
-const testStatus = run.status ?? 1;
+const instrumentError = run.error ? String(run.error.message ?? run.error) : null;
+const testStatus = instrumentError === null ? (run.status ?? 1) : 1;
 
 console.log('\n[2/3] 判据覆盖表');
-const testSource = ['tests/assemble.test.mjs', 'tests/card.test.mjs', 'tests/lorebook.test.mjs', 'tests/session.test.mjs', 'tests/worldbook.test.mjs']
-  .filter((p) => existsSync(join(root, p)))
-  .map((p) => readFileSync(join(root, p), 'utf8'))
-  .join('\n');
 let covered = 0;
 for (const [id, title, needles] of CRITERIA) {
   const hit = needles.filter((n) => testSource.includes(n));
@@ -116,12 +133,19 @@ console.log(offenders.length === 0
   : `  ⚠ A7 旁路面：${offenders.join('、')} 也在调用 assemble(——须确认是否旁路`);
 
 if (testStatus === 0 && !realDataReachable) {
-  console.log(`  ⚠ 真数据不可达 ⇒ 约 ${REALDATA_TESTS} 项判据被跳过：本次 PASS 的强度**低于**全量验收`);
+  console.log(`  ⚠ 真数据不可达 ⇒ ${realDataTestCount} 项判据被跳过：本次 PASS 的强度**低于**全量验收`);
 }
 
 console.log('\n' + '═'.repeat(72));
-if (testStatus !== 0) console.log(`裁决：FAIL（测试退出码 ${testStatus}）`);
-else if (!realDataReachable) console.log('裁决：PASS（降级）—— 判据全过，但真数据判据被跳过');
-else console.log('裁决：PASS（全量）—— 判据全过且真数据实测');
+if (instrumentError !== null) {
+  console.log(`裁决：ERROR —— 测试器**未能启动**（${instrumentError}）`);
+  console.log('  ⚠ 这是仪器问题，不是判据失败：先修仪器，别去怀疑判据。');
+} else if (testStatus !== 0) {
+  console.log(`裁决：FAIL（测试退出码 ${testStatus}）`);
+} else if (!realDataReachable) {
+  console.log(`裁决：PASS（降级）—— 判据全过，但 ${realDataTestCount} 项真数据判据被跳过`);
+} else {
+  console.log('裁决：PASS（全量）—— 判据全过且真数据实测');
+}
 console.log('═'.repeat(72));
-process.exit(testStatus !== 0 ? testStatus : (realDataReachable ? 0 : 2));
+process.exit(instrumentError !== null ? 3 : (testStatus !== 0 ? testStatus : (realDataReachable ? 0 : 2)));
