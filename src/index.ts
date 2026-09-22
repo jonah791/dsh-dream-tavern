@@ -132,6 +132,7 @@ export function apply(ctx: Context, config: Config): void {
   if (config.provider.trim().length === 0 || config.model.trim().length === 0) {
     logger.warn('未配置 provider/model：tavern_play 会在第一轮响亮失败（不猜默认模型）')
   }
+  let presetLogged = false
   const preset = (): Preset => {
     if (config.presetPath.trim() === '') return defaultPreset(config.budgetChars)
     // 配了预设文件却加载不了 ⇒ **响亮失败，绝不静默退回默认**：静默退回会让研究结论张冠李戴
@@ -139,6 +140,20 @@ export function apply(ctx: Context, config: Config): void {
     const loaded = loadPresetFile(config.presetPath, config.budgetChars)
     if (loaded.preset === undefined) {
       throw new Error(`预设加载失败（${config.presetPath}）：${loaded.errors.join('；')}`)
+    }
+    // 桥接的**未建模清单**必须被看见（不许静默丢字段——这正是今天修过的卡内世界书那类缺陷）。
+    if (!presetLogged) {
+      presetLogged = true
+      const b = loaded.bridge
+      if (b === undefined) {
+        logger.info('预设已加载：%s（本插件格式，%d 块）', loaded.preset.name, loaded.preset.blocks.length)
+      } else {
+        logger.info('预设已加载：%s（ST 桥接 · %d 块 · ST prompts %d 条 / marker %d）· **未建模 %d 条**（逐条理由见 scripts/quality-sweep.mjs --preset 的对账表）',
+          loaded.preset.name, loaded.preset.blocks.length, b.stats.prompts, b.stats.markers, b.unmodeled.length)
+        if (b.stats.markers > 0) {
+          logger.warn('该预设含 %d 个 marker（卡片/历史字段占位）：本插件里这些字段的位置**由代码写死**，预设不可拨（§4.5 card-tier 硬边界）', b.stats.markers)
+        }
+      }
     }
     return loaded.preset
   }

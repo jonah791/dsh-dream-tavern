@@ -100,7 +100,7 @@ export const CONTROL_SURFACE: readonly ControlDial[] = [
     id: 'budget',
     family: 'budget',
     current: '`preset.budgetChars` 为硬预算（字符）；超预算时**只裁 lorebook 来源的 system 片段**，按 priority 升序（最低先裁）；裁到不能再裁仍超 ⇒ `overBudget:true`',
-    range: 'budgetChars 任意正数或 undefined（= 不限）。⚠ **裁剪的覆盖面很窄**：depth-N / after_history / 历史 **都不参与裁剪**',
+    range: 'budgetChars 任意正数或 undefined（= 不限）。⚠ **裁剪的覆盖面很窄**：depth-N / after_history / 历史 **都不参与裁剪**。⇒ **后果（2026-09-22 实测）**：主人真实预设 `色欲之罪V3.1` 装配出 **49.2k–60.1k 字**（内建 default 是 1.6k–39.9k），此时预算**几乎无能为力**——抬到 60000 也只把 58/58 未过降到 4/58，因为超出的部分在**预设块与卡片字段**里，而它们**不在裁剪范围内**。⇒ 迭代预设时**别把 budget 当有效约束**',
     measure: '读 `dropped[]`（被裁的 id）、`overBudget`、`totalChars`',
     manifestField: MANIFEST_FIELDS.dropped,
   },

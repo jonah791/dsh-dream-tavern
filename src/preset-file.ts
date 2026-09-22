@@ -16,10 +16,19 @@
  */
 import { readFileSync } from 'node:fs';
 import type { Preset, PresetBlock, Slot } from './types.ts';
+import { bridgeStPreset, type StBridgeResult } from './st-preset.ts';
 
 export interface PresetParseResult {
   preset?: Preset;
   errors: string[];
+  /** 当文件是 ST 预设时，附带桥接对账表（供调用方把「未建模项」如实呈现，而不是静默丢）。 */
+  bridge?: StBridgeResult;
+}
+
+/** ST 预设的判据：有 `prompts` 数组。本插件格式用 `blocks`。 */
+function looksLikeStPreset(raw: unknown): boolean {
+  return raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+    && Array.isArray((raw as Record<string, unknown>)['prompts']);
 }
 
 const FIXED_SLOTS = new Set(['system', 'persona_prefix', 'persona_suffix', 'before_history', 'after_history']);
@@ -109,6 +118,11 @@ export function loadPresetFile(path: string, fallbackBudget: number): PresetPars
     raw = JSON.parse(text);
   } catch (e) {
     return { errors: [`JSON 解析失败：${e instanceof Error ? e.message : String(e)}`] };
+  }
+  // ST 预设（主人的正本格式）⇒ 走桥接；桥接的**未建模清单**随之返回，由调用方负责呈现。
+  if (looksLikeStPreset(raw)) {
+    const b = bridgeStPreset(raw, { budgetChars: fallbackBudget });
+    return b.preset === undefined ? { errors: b.errors, bridge: b } : { preset: b.preset, errors: [], bridge: b };
   }
   return parsePresetFile(raw, fallbackBudget);
 }
