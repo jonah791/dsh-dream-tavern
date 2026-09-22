@@ -10,7 +10,7 @@ import { hashEntries, hashMessages, canonicalJson, sha256 } from './hash.ts';
 import { matchLorebook } from './lorebook.ts';
 import type {
   AssembleInput, AssembleResult, ChatMessage, Manifest, ManifestEntry, ManifestPart,
-  PresetBlock, Slot, TemplateScope,
+  MarkerName, PresetBlock, Slot, TemplateScope,
 } from './types.ts';
 
 /** Slots that live inside the single leading system message. */
@@ -61,9 +61,23 @@ export function assemble(input: AssembleInput): AssembleResult {
 
   const parts: ManifestPart[] = [];
 
-  // 1) preset blocks (declared order; unknown placeholders stay visible)
+  /**
+   * **marker 落位表**（2026-09-22）：预设可声明某个卡片/运行时字段插在哪一段。
+   * ST 预设用 marker 做这件事，而本插件原先**写死**在下面几行里 ⇒ 表达力差距。
+   * **向后兼容**：没有 marker 块的预设 ⇒ 本表为空 ⇒ 下面的缺省行为**逐字节不变**。
+   */
+  const markerPlacement = new Map<MarkerName, { slot: Slot; priority: number }>();
   for (const block of preset.blocks as PresetBlock[]) {
-    if (block.enabled === false) continue;
+    if (block.marker === undefined || block.enabled === false) continue;
+    markerPlacement.set(block.marker, { slot: block.slot, priority: block.priority });
+  }
+  const place = (name: MarkerName, dSlot: Slot, dPriority: number): { slot: Slot; priority: number } =>
+    markerPlacement.get(name) ?? { slot: dSlot, priority: dPriority };
+
+  // 1) preset blocks (declared order; unknown placeholders stay visible)
+  // ⚠ **marker 块是声明不是片段**（它只说「某字段放哪」，内容来自卡片）⇒ 不进 parts。
+  for (const block of preset.blocks as PresetBlock[]) {
+    if (block.enabled === false || block.marker !== undefined) continue;
     parts.push(part(`preset:${block.id}`, block.slot, `preset:${block.id}`, block.priority, renderTemplate(block.text, scope)));
   }
 
@@ -72,26 +86,37 @@ export function assemble(input: AssembleInput): AssembleResult {
   // ⚠ `description` 必须进上下文：在 ST 里它是**主定义**（人设/世界观），`personality`
   // 只是摘要字段。2026-09-22 实测：只注入 persona 时，一张 description=2844 字的卡
   // 装配出来只有 1146 字——主定义整段丢失。
-  if (card.description.length > 0) parts.push(part('card:description', 'system', 'card:description', 99, card.description));
   // ⚠ `source` 必须是**身份**（能唯一指认一段内容）：2026-09-22 质量判据（no-duplicate）第一次跑就抓到
   // persona 与 scenario 共用裸 `'card'` ⇒ 两个**不同**字段看起来像「同一来源被注入两遍」。
   // 同族标签里 preset 用 `preset:<blockId>`、lorebook 用 `lorebook:<id>`，card 也应细到字段。
-  if (card.persona.length > 0) parts.push(part('card:persona', 'persona_prefix', 'card:persona', 100, card.persona));
-  if (card.systemPrompt.length > 0) parts.push(part('card:sysprompt', 'system', 'card:system_prompt', 98, card.systemPrompt));
-  if (card.scenario.length > 0) parts.push(part('card:scenario', 'system', 'card:scenario', 90, card.scenario));
+  const pushCard = (name: MarkerName, id: string, source: string, dSlot: Slot, dPriority: number, text: string): void => {
+    if (text.length === 0) return;
+    const p = place(name, dSlot, dPriority);
+    parts.push(part(id, p.slot, source, p.priority, text));
+  };
+  pushCard('description', 'card:description', 'card:description', 'system', 99, card.description);
+  pushCard('persona', 'card:persona', 'card:persona', 'persona_prefix', 100, card.persona);
+  pushCard('systemPrompt', 'card:sysprompt', 'card:system_prompt', 'system', 98, card.systemPrompt);
+  pushCard('scenario', 'card:scenario', 'card:scenario', 'system', 90, card.scenario);
   // 对话样例只作文风参考，且必须在文本里说清楚它不是当前剧情（否则会被当成已发生的事）
-  if (card.exampleDialogue.length > 0) {
-    parts.push(part(
-      'card:example', 'system', 'card:example', 45,
-      `【对话样例（仅供文风与语气参考，**不是**当前剧情的一部分）】\n${card.exampleDialogue}`,
-    ));
-  }
+  pushCard(
+    'exampleDialogue', 'card:example', 'card:example', 'system', 45,
+    card.exampleDialogue.length === 0
+      ? ''
+      : `【对话样例（仅供文风与语气参考，**不是**当前剧情的一部分）】\n${card.exampleDialogue}`,
+  );
 
   // 3) live state — the model must see exactly what the settlement agent wrote
-  parts.push(part('state', 'system', 'state', 80, stateText));
+  {
+    const p = place('state', 'system', 80);
+    parts.push(part('state', p.slot, 'state', p.priority, stateText));
+  }
 
   // 4) script segment (optional main-line anchor)
-  if (script && script.segment.length > 0) parts.push(part('script', 'system', 'script', 70, script.segment));
+  if (script !== undefined && script.segment.length > 0) {
+    const p = place('script', 'system', 70);
+    parts.push(part('script', p.slot, 'script', p.priority, script.segment));
+  }
 
   // 5) lorebook hits — 条目清单由**调用方唯一给出**（`resolveLorebook` 已合并卡内世界书）。
   // ⚠ 2026-09-22 冒烟实测：首版在此自行追加 `[...card.lorebook, ...lorebook]`，而调用方
@@ -105,7 +130,8 @@ export function assemble(input: AssembleInput): AssembleResult {
 
   // 6) card-level post-history instructions (ST semantics: after the transcript, before the reply)
   if (card.postHistoryInstructions.length > 0) {
-    parts.push(part('card:posthist', 'after_history', 'card:post_history_instructions', 50, card.postHistoryInstructions));
+    const p = place('postHistoryInstructions', 'after_history', 50);
+    parts.push(part('card:posthist', p.slot, 'card:post_history_instructions', p.priority, card.postHistoryInstructions));
   }
 
   // ── budget trim (deterministic: lorebook first, lowest priority first) ──

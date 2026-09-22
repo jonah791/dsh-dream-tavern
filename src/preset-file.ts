@@ -16,6 +16,7 @@
  */
 import { readFileSync } from 'node:fs';
 import type { Preset, PresetBlock, Slot } from './types.ts';
+import { MARKER_NAMES, type MarkerName } from './types.ts';
 import { bridgeStPreset, type StBridgeResult } from './st-preset.ts';
 
 export interface PresetParseResult {
@@ -92,12 +93,19 @@ export function parsePresetFile(raw: unknown, fallbackBudget: number): PresetPar
       errors.push(`${at}.enabled 必须是布尔`);
       return;
     }
+    // marker 必须落在已知集合里——**载入期校验**（不是每轮静默忽略）：写错名字的落位声明
+    // 会静默失效，那是「撒谎的配置」（本仓反复踩过的那类缺陷）。
+    if (o['marker'] !== undefined && !MARKER_NAMES.includes(o['marker'] as MarkerName)) {
+      errors.push(`${at}.marker 非法（${JSON.stringify(o['marker'])}）—— 已知：${MARKER_NAMES.join(' / ')}`);
+      return;
+    }
     blocks.push({
       id: bid,
       slot: o['slot'],
       priority: o['priority'],
       text: o['text'],
       ...(o['enabled'] === undefined ? {} : { enabled: o['enabled'] as boolean }),
+      ...(o['marker'] === undefined ? {} : { marker: o['marker'] as MarkerName }),
     });
   });
 

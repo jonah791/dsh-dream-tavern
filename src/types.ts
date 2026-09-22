@@ -108,6 +108,26 @@ export interface Card {
   lorebook: LorebookEntry[];
 }
 
+/**
+ * 能被预设**声明落位**的卡片/运行时字段（marker）。
+ *
+ * ⚠ 2026-09-22 增补的背景：ST 预设用 marker（`charDescription`/`scenario`/…）让
+ * **「卡片字段插在哪一段」变成预设可拨的**；而本插件原先把它**写死在 `assemble.ts` 里**
+ * （§4.5 `card-tier` 的硬边界）。⇒ 按 ST 的直觉去迭代「定义放哪」时，本插件**表达不出来**。
+ * 本字段把那条差距补上：预设可声明一个 `marker` 块，**接管该字段的槽位与优先级**。
+ *
+ * 名字用**本插件自己的字段名**（不沿用 ST 的 identifier）——ST→本插件的映射归 `st-preset.ts`，
+ * 免得又犯「把某个实现的专有名字当成通用约定」那个错。
+ */
+export type MarkerName =
+  | 'description' | 'persona' | 'systemPrompt' | 'scenario'
+  | 'exampleDialogue' | 'postHistoryInstructions' | 'state' | 'script';
+
+export const MARKER_NAMES: readonly MarkerName[] = [
+  'description', 'persona', 'systemPrompt', 'scenario',
+  'exampleDialogue', 'postHistoryInstructions', 'state', 'script',
+];
+
 export interface PresetBlock {
   id: string;
   slot: Slot;
@@ -115,6 +135,12 @@ export interface PresetBlock {
   /** Template text; supports {{card.name}} / {{input}} / {{state}} placeholders. */
   text: string;
   enabled?: boolean;
+  /**
+   * 声明本块**代表哪个卡片/运行时字段的位置**（内容来自卡片，不来自 `text`）。
+   * 设了它 ⇒ 装配器用**本块的 slot 与 priority** 放该字段，覆盖 `assemble.ts` 的内建缺省。
+   * 未声明 ⇒ 完全维持原行为（向后兼容：没有 marker 的预设行为逐字节不变）。
+   */
+  marker?: MarkerName;
 }
 
 export interface Preset {

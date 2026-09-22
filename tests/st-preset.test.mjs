@@ -33,17 +33,32 @@ const GOOD = {
   ] }],
 };
 
-test('好样本：顺序表即顺序，priority 递减；marker 不进 blocks', () => {
+test('好样本：顺序表即顺序；marker 变成**落位声明块**（2026-09-22 起，不再是未建模）', () => {
   const r = bridgeStPreset(GOOD, { budgetChars: 5000 });
   assert.deepEqual(r.errors, []);
   assert.equal(r.preset?.name, '夹具预设');
   assert.equal(r.preset?.budgetChars, 5000, '预算用本插件的口径（不沿用 ST 的 token 上限）');
-  assert.deepEqual(r.preset?.blocks.map((b) => b.id), ['a', 'b', 'c'], 'marker 不得进 blocks');
-  const [a, b, c] = r.preset.blocks;
-  assert.ok(a.priority > b.priority && b.priority > c.priority, 'priority 必须随序位递减');
-  assert.equal(a.slot, 'system', 'injection_position=0 ⇒ 相对位置，归 system 区段');
-  assert.equal(r.stats.orderSource, 'prompt_order');
+  const ids = r.preset.blocks.map((b) => b.id);
+  assert.deepEqual(ids, ['a', 'charDescription', 'b', 'c'], 'marker 要作为**落位声明块**留在原位');
+  const content = r.preset.blocks.filter((b) => b.marker === undefined);
+  assert.deepEqual(content.map((b) => b.id), ['a', 'b', 'c'], '内容块仍是这三条');
+  const m = r.preset.blocks.find((b) => b.id === 'charDescription');
+  assert.equal(m.marker, 'description', 'ST 的 charDescription 映射到本插件的 description');
+  assert.equal(m.text, '', 'marker 块不带内容（内容来自卡片）');
+  assert.deepEqual([m.slot, m.priority], ['system', 99], '填本插件缺省落位 ⇒ 行为与「无 marker」逐字节相同');
   assert.equal(r.stats.markers, 1);
+  assert.equal(r.stats.markerBlocks, 1, '接成落位块的 marker 数要可读');
+  assert.ok(!r.unmodeled.some((u) => u.field.includes('charDescription')), '已支持的 marker 不该再进未建模清单');
+});
+
+test('未支持的 ST marker 仍进未建模清单并带理由（不假装支持）', () => {
+  const st = JSON.parse(JSON.stringify(GOOD));
+  st.prompts.push({ marker: true, identifier: 'worldInfoBefore', name: 'World Info (before)', content: '', enabled: true });
+  st.prompt_order[0].order.splice(1, 0, { identifier: 'worldInfoBefore', enabled: true });
+  const r = bridgeStPreset(st, { budgetChars: 100 });
+  assert.equal(r.stats.markerBlocks, 1, '只有 charDescription 被接上');
+  const u = r.unmodeled.find((x) => x.field === 'prompt(marker):worldInfoBefore');
+  assert.ok(u !== undefined && u.reason.length > 6, 'worldInfoBefore 必须仍在未建模里且带理由');
 });
 
 test('两条 enabled 都生效：prompt 自己关掉 ⇒ block 关掉', () => {
@@ -60,13 +75,15 @@ test('顺序表里关掉 ⇒ 也关掉（两者都启用才启用）', () => {
   assert.equal(r.stats.disabledByOrder, 1);
 });
 
-test('★ 未建模项逐条带理由：marker、采样参数、未识别字段都要登记且理由非空', () => {
+test('★ 未建模项逐条带理由：采样参数、未识别字段、未支持的 marker 都要登记且理由非空', () => {
   const r = bridgeStPreset(GOOD, { budgetChars: 100 });
   const fields = r.unmodeled.map((u) => u.field);
-  assert.ok(fields.includes('prompt(marker):charDescription'), 'marker 必须登记：' + JSON.stringify(fields));
   assert.ok(fields.includes('top:temperature'), '采样参数必须登记');
   assert.ok(fields.includes('top:openai_max_tokens'), '生成上限必须登记');
   assert.ok(fields.includes('top:someBrandNewField'), '**未识别**字段也必须登记（原样留档，不假装支持）');
+  // 已支持的 marker（charDescription）走「落位声明块」而**不是**未建模——那条反向判据在
+  // 「未支持的 ST marker 仍进未建模清单」里，两者互为对照。
+  assert.ok(!fields.includes('prompt(marker):charDescription'), '已支持 marker 不该出现在未建模里');
   for (const u of r.unmodeled) assert.ok(u.reason.length >= 6, `${u.field} 的理由太短：${u.reason}`);
   assert.ok(r.mapped.length >= 4, '对账表要写清映射了什么');
 });

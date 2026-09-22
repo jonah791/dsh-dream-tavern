@@ -19,7 +19,31 @@
  * **未建模项逐条登记，绝不静默丢弃**——「静默丢字段」正是本仓今天刚修过的那类缺陷
  * （卡内世界书 1223 条因词汇不匹配被静默丢弃，命中 0）。
  */
-import type { Preset, PresetBlock, Slot } from './types.ts';
+import type { MarkerName, Preset, PresetBlock, Slot } from './types.ts';
+
+/**
+ * ST 的 marker identifier → 本插件的 marker 名。
+ * **只有这四个在 ST 侧有对应物**；其余 marker（worldInfo* / personaDescription / chatHistory / agent*）
+ * 仍然进未建模清单并逐条说明理由——不假装支持。
+ */
+const ST_MARKER_TO_MINE: Record<string, MarkerName> = {
+  charDescription: 'description',
+  charPersonality: 'persona',
+  scenario: 'scenario',
+  dialogueExamples: 'exampleDialogue',
+};
+
+/** 本插件对每个 marker 的**缺省落位**（与 `assemble.ts` 的内建缺省一致 ⇒ 无行为变化）。 */
+const DEFAULT_PLACEMENT: Record<MarkerName, { slot: Slot; priority: number }> = {
+  description: { slot: 'system', priority: 99 },
+  persona: { slot: 'persona_prefix', priority: 100 },
+  systemPrompt: { slot: 'system', priority: 98 },
+  scenario: { slot: 'system', priority: 90 },
+  exampleDialogue: { slot: 'system', priority: 45 },
+  postHistoryInstructions: { slot: 'after_history', priority: 50 },
+  state: { slot: 'system', priority: 80 },
+  script: { slot: 'system', priority: 70 },
+};
 
 /** ST 预设里被识别但**本层不建模**的顶层字段 → 理由（逐条，不是一句「不支持」）。 */
 const TOP_UNMODELED: Record<string, string> = {
@@ -90,6 +114,8 @@ export interface StBridgeUnmodeled { field: string; reason: string }
 export interface StBridgeStats {
   prompts: number;
   markers: number;
+  /** 其中被接成**落位声明块**的 marker 数（即表达力差距已补上的部分）。 */
+  markerBlocks: number;
   enabledInPrompts: number;
   blocks: number;
   disabledByOrder: number;
@@ -119,7 +145,7 @@ export function bridgeStPreset(st: unknown, opts: { budgetChars: number }): StBr
   const mapped: StBridgeMapped[] = [];
   const unmodeled: StBridgeUnmodeled[] = [];
   const stats: StBridgeStats = {
-    prompts: 0, markers: 0, enabledInPrompts: 0, blocks: 0, disabledByOrder: 0, orderSource: 'prompts-array',
+    prompts: 0, markers: 0, markerBlocks: 0, enabledInPrompts: 0, blocks: 0, disabledByOrder: 0, orderSource: 'prompts-array',
   };
 
   if (st === null || typeof st !== 'object' || Array.isArray(st)) {
@@ -179,7 +205,17 @@ export function bridgeStPreset(st: unknown, opts: { budgetChars: number }): StBr
 
     if (isMarker) {
       const key = item.identifier;
-      unmodeled.push({ field: `prompt(marker):${key}`, reason: MARKER_REASONS[key] ?? '未知 marker（原样留档，不假装支持）' });
+      const mine = ST_MARKER_TO_MINE[key];
+      if (mine === undefined) {
+        unmodeled.push({ field: `prompt(marker):${key}`, reason: MARKER_REASONS[key] ?? '未知 marker（原样留档，不假装支持）' });
+        return;
+      }
+      // 已支持的 marker ⇒ **落位声明块**：内容来自卡片，本块只声明「插在哪一段 / 多大优先级」。
+      // ⚠ 用**本插件的缺省落位**填（不是 ST 的 order 位置）⇒ 行为与「无 marker」时**逐字节相同**；
+      // 差别在于这些数字从此**写在预设里**、可以被改——那才是补上表达力差距的部分。
+      const d = DEFAULT_PLACEMENT[mine];
+      blocks.push({ id: key, slot: d.slot, priority: d.priority, text: '', marker: mine, enabled });
+      stats.markerBlocks += 1;
       return;
     }
     const content = asString(p['content']);
