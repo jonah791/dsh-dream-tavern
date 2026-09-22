@@ -29,7 +29,14 @@ export interface QualityVerdict {
 
 export interface QualityReport {
   verdicts: QualityVerdict[];
-  /** 全过才算好；空表视为通过（没有判据要说坏话）。 */
+  /**
+   * **提示**（不影响 `ok`）：机制没做错、但值得主意的读数。
+   * 2026-09-22 用真卡库跑出来的分层：同一 `source` 出现两次 = 机制错（硬）；
+   * 两张**不同**条目内容恰好相同 = 卡内容的固有重复（软）——机制无能为力，
+   * 去重属内容层决策。**混为一谈会让判据对内容层的事判机制层的罪。**
+   */
+  notices: string[];
+  /** 全过才算好；空表视为通过（没有判据要说坏话）。`notices` 不参与。 */
   ok: boolean;
 }
 
@@ -43,32 +50,46 @@ export interface QualityInput {
   normBlockIds: readonly string[];
 }
 
-/** 同一来源或同一文本被装进上下文两次 —— 纯浪费预算，且可能给出互相矛盾的指令。 */
+/**
+ * **同一来源**被装进上下文两次 —— 这是**机制错**（2026-09-22 世界书重复注入事故就是这个）。
+ *
+ * ⚠ 分层（2026-09-22 真卡库跑出来的）：本判据**只看 `source`**。
+ * 「两张**不同**条目内容恰好相同」不是机制错（机制忠实地把两条都装了），属内容层的重复，
+ * 归 `notices` 报告而不判失败——否则就是**对内容层的事判机制层的罪**。
+ */
 function judgeNoDuplicate(manifest: Manifest): QualityVerdict {
   const bySource = new Map<string, string[]>();
-  const byText = new Map<string, string[]>();
   for (const entry of manifest.entries) {
     for (const p of entry.parts) {
       const s = bySource.get(p.source) ?? [];
       s.push(p.id);
       bySource.set(p.source, s);
-      const t = byText.get(p.sha256) ?? [];
-      t.push(p.id);
-      byText.set(p.sha256, t);
     }
   }
   const dupSources = [...bySource.entries()].filter(([, ids]) => ids.length > 1);
-  const dupTexts = [...byText.entries()].filter(([, ids]) => ids.length > 1);
-  const problems: string[] = [];
-  for (const [source, ids] of dupSources) problems.push(`来源 ${source} 出现 ${ids.length} 次（${ids.join('、')}）`);
-  for (const [, ids] of dupTexts) problems.push(`同文本片段出现 ${ids.length} 次（${ids.join('、')}）`);
+  const problems = dupSources.map(([source, ids]) => `来源 ${source} 出现 ${ids.length} 次（${ids.join('、')}）`);
   return {
     id: 'no-duplicate',
     ok: problems.length === 0,
     detail: problems.length === 0
-      ? `无重复片段（检查 ${manifest.entries.reduce((n, e) => n + e.parts.length, 0)} 个片段）`
+      ? `无重复来源（检查 ${manifest.entries.reduce((n, e) => n + e.parts.length, 0)} 个片段）`
       : problems.join('；'),
   };
+}
+
+/** 提示（不判失败）：不同来源的片段内容恰好相同 —— 内容层的重复，机制无能为力。 */
+function collectNotices(manifest: Manifest): string[] {
+  const byText = new Map<string, string[]>();
+  for (const entry of manifest.entries) {
+    for (const p of entry.parts) {
+      const t = byText.get(p.sha256) ?? [];
+      t.push(`${p.source}(${p.id})`);
+      byText.set(p.sha256, t);
+    }
+  }
+  return [...byText.entries()]
+    .filter(([, ids]) => ids.length > 1)
+    .map(([, ids]) => `不同来源但内容相同：${ids.join('、')}`);
 }
 
 /**
@@ -121,7 +142,7 @@ export function judgeAssembly(input: QualityInput): QualityReport {
     judgeNormFirst(input.manifest, input.preset, input.normBlockIds),
     judgeWithinBudget(input.manifest),
   ];
-  return { verdicts, ok: verdicts.every((v) => v.ok) };
+  return { verdicts, notices: collectNotices(input.manifest), ok: verdicts.every((v) => v.ok) };
 }
 
 /** 一行摘要（落轨迹 / 给研究层当标签用）。 */

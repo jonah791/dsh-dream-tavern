@@ -109,7 +109,7 @@ function truthy(value: unknown): boolean {
 export function importWorldbook(book: StWorldbook): ImportResult {
   const rawSource = book.entries ?? {};
   const pairs: Array<[string, StWorldEntry]> = Array.isArray(rawSource)
-    ? rawSource.map((e, i) => [String(e['uid'] ?? i), e])
+    ? rawSource.map((e, i) => [String(e['uid'] ?? e['id'] ?? i), e])
     : Object.entries(rawSource);
 
   const entries: LorebookEntry[] = [];
@@ -119,7 +119,7 @@ export function importWorldbook(book: StWorldbook): ImportResult {
   const skipped: Array<{ uid: string; reason: string }> = [];
 
   for (const [fallbackUid, entry] of pairs) {
-    const uid = String(entry['uid'] ?? fallbackUid);
+    const uid = String(entry['uid'] ?? entry['id'] ?? fallbackUid);
     raw[uid] = entry;
     for (const key of Object.keys(entry)) {
       if (INTERPRETED.has(key)) continue;
@@ -133,7 +133,11 @@ export function importWorldbook(book: StWorldbook): ImportResult {
       continue;
     }
     const constant = truthy(entry['constant']);
-    const keys = normalizeKeys(entry['key']);
+    // ⚠ 2026-09-22 真卡库实测：**卡内**世界书（`character_book.entries[]`）与独立世界书文件
+    // 用的是**两套词汇**：卡内是 `keys`（复数）/`insertion_order`/`id`/`enabled`，
+    // 独立文件是 `key`/`order`/`uid`/`disable`。原实现只认后者 ⇒ 主人 57 张卡的卡内世界书里
+    // **除 constant 外的条目全被当作「永远无法命中」丢弃**（1223 条，关键词非空 0 条）。
+    const keys = normalizeKeys(entry['key'] ?? entry['keys']);
     if (!constant && keys.length === 0) {
       skipped.push({ uid, reason: '既非 constant 也没有关键词（永远无法命中）' });
       continue;
@@ -150,10 +154,13 @@ export function importWorldbook(book: StWorldbook): ImportResult {
       keywords: keys.join(','),
       ...(constant ? { constant: true } : {}),
       position: positionToSlot(entry['position'], entry['depth']),
-      order: Number.isFinite(Number(entry['order'])) ? Number(entry['order']) : 0,
+      order: Number.isFinite(Number(entry['order'] ?? entry['insertion_order']))
+        ? Number(entry['order'] ?? entry['insertion_order'])
+        : 0,
       ...(probability === undefined ? {} : { probability }),
       content,
-      enabled: !truthy(entry['disable']),
+      // 卡内用 `enabled`（正），独立文件用 `disable`（反）——语义相反，认错会静默反掉开关。
+      enabled: entry['enabled'] === undefined ? !truthy(entry['disable']) : truthy(entry['enabled']),
     });
   }
 
