@@ -68,7 +68,7 @@ export const CONTROL_SURFACE: readonly ControlDial[] = [
     family: 'position',
     current: '每个片段按 `slot` 决定落点：前四类（system / persona_prefix / before_history / persona_suffix）**并入开头同一条 system 消息**（`\\n\\n` 连接），depth-N 插进历史内部，after_history 落在历史之后、本轮输入之前',
     range: '6 类固定枚举（`Slot` 类型）。**注意语义**：前 4 类不是 4 条消息，而是同一条消息里的 4 个区段',
-    measure: '数 `entries[].slot` 的分布；数 `entries[].parts[].slot` 看每个区段各由谁贡献',
+    measure: '数 `entries[].slot` 的分布；数 `entries[].parts[].slot` 看每个区段各由谁贡献。⚠ **代价不只在字数**：`system` 段是消息列表的**第一段**，动它的内容等于让**整条前缀**失效——2026-09-22 实测 A/B/A：改 system 首段 ⇒ 缓存命中 **80.3% → 0**，撤掉后回来 **53.4%**（同会话同卡，见 §6.4）',
     manifestField: MANIFEST_FIELDS.entrySlot,
   },
   {
