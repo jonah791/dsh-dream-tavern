@@ -20,6 +20,7 @@ import { assemble, messagesFromManifest, verifyAgainstActual } from './assemble.
 import { ensureOpening, runTurn, type Completer, type TurnDeps } from './session.ts'
 import { createTavernPanel } from './panel.ts'
 import { defaultPreset } from './preset.ts'
+import { loadPresetFile } from './preset-file.ts'
 import { Store } from './store.ts'
 import { describeImport } from './worldbook.ts'
 import type { ChatMessage, Manifest, Preset } from './types.ts'
@@ -41,6 +42,14 @@ export interface Config {
   temperature: number
   /** Hard character budget for one assembled request. */
   budgetChars: number
+  /**
+   * 预设文件路径（JSON）。空 ⇒ 用内建默认预设。
+   *
+   * ⚠ 本字段是 2026-09-22 补上的：此前预设**写死**为 `defaultPreset(...)`，
+   * 而同文件里却有一条注释宣称「放进 dataDir 就能改」——**那句话没有对应实现**。
+   * 缺了它，本插件被指定的第一个目的（**迭代预设**）在代码上不可达。
+   */
+  presetPath: string
 }
 
 export const Config = z.object({
@@ -62,6 +71,8 @@ export const Config = z.object({
   temperature: z.number().default(0.9),
   /** Hard character budget for one assembled request. */
   budgetChars: z.number().default(24000),
+  /** 预设文件路径（JSON）。空 ⇒ 内建默认。见 `Config` 上方的说明。 */
+  presetPath: z.string().default(''),
 })
 
 const PLUGIN = 'agent-dream-tavern'
@@ -121,7 +132,16 @@ export function apply(ctx: Context, config: Config): void {
   if (config.provider.trim().length === 0 || config.model.trim().length === 0) {
     logger.warn('未配置 provider/model：tavern_play 会在第一轮响亮失败（不猜默认模型）')
   }
-  const preset = (): Preset => defaultPreset(config.budgetChars)
+  const preset = (): Preset => {
+    if (config.presetPath.trim() === '') return defaultPreset(config.budgetChars)
+    // 配了预设文件却加载不了 ⇒ **响亮失败，绝不静默退回默认**：静默退回会让研究结论张冠李戴
+    // （与「未配置 provider/model ⇒ 第一轮响亮失败，不猜」同一族纪律）。
+    const loaded = loadPresetFile(config.presetPath, config.budgetChars)
+    if (loaded.preset === undefined) {
+      throw new Error(`预设加载失败（${config.presetPath}）：${loaded.errors.join('；')}`)
+    }
+    return loaded.preset
+  }
 
   /**
    * 唯一的模型入口：把共享回合层的 `ChatMessage[]` 翻成 harness 消息并流式取回。
@@ -528,7 +548,7 @@ export function apply(ctx: Context, config: Config): void {
     config.dataDir, config.cardDirs.length, config.worldbookDirs.length, config.provider, config.model)
 }
 
-/** Template seed for the default preset; replaced by dataDir config once edited there. */
+/** 装配单的一行摘要（落轨迹 / 工具面渲染用）。 */
 export function manifestSummary(manifest: Manifest): string {
   const kinds = new Map<string, number>()
   for (const entry of manifest.entries) kinds.set(entry.slot, (kinds.get(entry.slot) ?? 0) + 1)
