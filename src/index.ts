@@ -16,6 +16,8 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createAssistantMessage, createMessage, createUserMessage } from '@deepseek-ai/dsh-llm/message'
 import type { Message } from '@deepseek-ai/dsh-llm/message'
+// 0.1.7：`Context.llm` 由 @deepseek-ai/dsh-llm 的根模块声明；只 import 子路径拿不到该增强。
+import type {} from '@deepseek-ai/dsh-llm'
 import { assemble, messagesFromManifest, verifyAgainstActual } from './assemble.ts'
 import { ensureOpening, runTurn, type Completer, type TurnDeps } from './session.ts'
 import { createTavernPanel } from './panel.ts'
@@ -24,6 +26,12 @@ import { loadPresetFile } from './preset-file.ts'
 import { Store } from './store.ts'
 import { describeImport } from './worldbook.ts'
 import type { ChatMessage, Manifest, Preset } from './types.ts'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'agent-dream-tavern': { kind: 'agent-dream-tavern' }
+  }
+}
 
 export const name = 'agent-dream-tavern'
 export const inject = ['tools', 'llm'] as const
@@ -96,7 +104,8 @@ function toHarnessMessages(messages: ChatMessage[], provider: string, model: str
       return createMessage({
         role: 'system',
         content: [{ type: 'text', text: message.text }],
-        source: { kind: 'plugin', plugin: PLUGIN },
+        // 0.1.7：system 角色的 source 必须是生产者自有的 `system-prompt`（v3 的 plugin 包装已移除）。
+        source: { kind: 'system-prompt' },
       })
     }
     if (message.role === 'assistant') {
@@ -107,7 +116,7 @@ function toHarnessMessages(messages: ChatMessage[], provider: string, model: str
     }
     return createUserMessage({
       content: [{ type: 'text', text: message.text }],
-      source: { kind: 'plugin', plugin: PLUGIN },
+      source: { kind: 'agent-dream-tavern' },
     })
   })
 }
@@ -169,6 +178,11 @@ export function apply(ctx: Context, config: Config): void {
     }
     const harnessMessages = toHarnessMessages(messages, config.provider, config.model)
     let text = ''
+    let reasoning = ''
+    // 多段思维链（`reasoning-delta` 带 index）：换段时补一个空行，保留分段结构，
+    // 否则各段会粘成一句，分析时看不出「模型分了几次想」。
+    let reasoningIndex = -1
+    let finishKind = ''
     let inputTokens = 0
     let outputTokens = 0
     let cacheReadTokens = 0
@@ -180,6 +194,14 @@ export function apply(ctx: Context, config: Config): void {
       temperature: options.temperature,
     })) {
       if (chunk.type === 'text-delta') text += chunk.text
+      else if (chunk.type === 'reasoning-delta') {
+        if (reasoningIndex >= 0 && chunk.index !== reasoningIndex) reasoning += '\n\n'
+        reasoningIndex = chunk.index
+        reasoning += chunk.text
+      }
+      // `finish.reason.kind` 是提供方给的**权威**结束原因（含 `max-tokens`）——
+      // 用它判截断，比 `outputTokens >= maxTokens` 这个代理量可靠。
+      else if (chunk.type === 'finish') finishKind = chunk.reason.kind
       else if (chunk.type === 'usage') {
         const usage = chunk.usage as unknown as Record<string, number | undefined>
         inputTokens = usage['inputTokens'] ?? usage['input'] ?? 0
@@ -187,7 +209,7 @@ export function apply(ctx: Context, config: Config): void {
         cacheReadTokens = usage['cacheReadTokens'] ?? usage['cacheRead'] ?? 0
       }
     }
-    return { text, usage: { inputTokens, outputTokens, cacheReadTokens } }
+    return { text, reasoning, finishKind, usage: { inputTokens, outputTokens, cacheReadTokens } }
   }
 
   /** 工具与面板共用同一份依赖（判据 A7：无旁路）。 */
@@ -198,6 +220,8 @@ export function apply(ctx: Context, config: Config): void {
     budgetChars: config.budgetChars,
     maxTokens: config.maxTokens,
     temperature: config.temperature,
+    // 路由随轮次落盘（turns/<turn>.json）——读数可归因的前提。
+    route: { provider: config.provider, model: config.model },
   }
   const turnDeps = (): TurnDeps => deps
 
@@ -468,6 +492,10 @@ export function apply(ctx: Context, config: Config): void {
           outputTokens: { type: 'number' },
           cacheReadTokens: { type: 'number' },
           truncated: { type: 'boolean' },
+          finishKind: { type: 'string' },
+          reasoningChars: { type: 'number' },
+          reasoningPath: { type: 'string' },
+          turnRecordPath: { type: 'string' },
         },
       },
     },
@@ -476,10 +504,12 @@ export function apply(ctx: Context, config: Config): void {
         ok: boolean; reason: string; session: string; turn: number; text: string; manifestHash: string;
         manifestPath: string; a1Ok: boolean; a1Detail: string; requestChars: number; messages: number;
         inputTokens: number; outputTokens: number; cacheReadTokens: number; truncated: boolean;
+        finishKind: string; reasoningChars: number; reasoningPath: string;
       } => ({
         ok: false, reason, session: args.session, turn: 0, text: '', manifestHash: '', manifestPath: '',
         a1Ok: false, a1Detail: '', requestChars: 0, messages: 0,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, truncated: false,
+        finishKind: '', reasoningChars: 0, reasoningPath: '',
       })
 
       let stateArg: Record<string, unknown> | undefined
@@ -499,7 +529,26 @@ export function apply(ctx: Context, config: Config): void {
       })
       if (!result.ok) {
         logger.warn('tavern_play 失败：%s', result.reason)
-        return fail(result.reason)
+        // 失败也要把**诊断面**透出去。裸 `fail()` 只给固定字段，会把「哪一轮 / 思维链落在哪个文件 /
+        // 结束原因 / 花了多少 token」全部丢掉——而这几项正是事后追因唯一的抓手。
+        // 2026-09-23 空正文事故实测：reason 里写着「思维链已落盘供诊断」，但工具返回值里
+        // `reasoningPath` 是空串，调用者**根本找不到那个文件**（自己写的诊断被自己丢掉了）。
+        return {
+          ...fail(result.reason),
+          turn: result.turn,
+          manifestHash: result.manifest === null ? '' : result.manifest.hash,
+          manifestPath: result.manifestPath,
+          requestChars: result.requestChars,
+          messages: result.messages,
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          cacheReadTokens: result.usage.cacheReadTokens,
+          truncated: result.truncated,
+          finishKind: result.finishKind,
+          reasoningChars: result.reasoningChars,
+          reasoningPath: result.reasoningPath,
+          turnRecordPath: result.turnRecordPath,
+        }
       }
       return {
         ok: true,
@@ -517,6 +566,10 @@ export function apply(ctx: Context, config: Config): void {
         outputTokens: result.usage.outputTokens,
         cacheReadTokens: result.usage.cacheReadTokens,
         truncated: result.truncated,
+        finishKind: result.finishKind,
+        reasoningChars: result.reasoningChars,
+        reasoningPath: result.reasoningPath,
+        turnRecordPath: result.turnRecordPath,
       }
     },
   }))

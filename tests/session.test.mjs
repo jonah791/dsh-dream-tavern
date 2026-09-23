@@ -34,6 +34,7 @@ function fixture() {
     budgetChars: 24000,
     maxTokens: 200,
     temperature: 0.9,
+    route: { provider: 'test', model: 'test-model' },
     complete: async (messages, options) => {
       const last = messages.at(-1);
       return {
@@ -42,6 +43,10 @@ function fixture() {
           : options.purpose === 'candidates'
             ? '推门进去\n后退一步\n喊她的名字'
             : `回复：${last.text.slice(0, 10)}`,
+        // 思维链与结束原因（2026-09-23 新增字段）：假 Completer 必须与 Completion 契约同形，
+        // 否则 `writeReasoning` 会拿到 undefined（契约迁移漏改生产者 ⇒ 全库扫描纪律）。
+        reasoning: '先看她此刻在做什么，再决定用哪句开口。',
+        finishKind: 'stop',
         usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0 },
       };
     },
@@ -206,5 +211,159 @@ test('readLatestManifest：轮次号不能靠历史长度反推（开场 1 条 +
     const req = metrics.items.find((i) => i.label === '上轮请求');
     assert.notEqual(req.value, '—', '上轮请求必须有读数');
     assert.ok(String(req.hint).includes('第 4 轮'), `读数应指向第 4 轮，实际 ${req.hint}`);
+  } finally { f.cleanup(); }
+});
+
+test('思维链落盘：reasoning/<turn>.md 与装配单同轮号，且**不得**回流进对话历史', async () => {
+  const f = fixture();
+  try {
+    const r = await runTurn(f.deps, { session: 'rs', cardId: 'test-card', input: '我走进去。' });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.finishKind, 'stop');
+    assert.equal(r.truncated, false, 'stop 不是截断');
+    assert.ok(r.reasoningChars > 0, '本回合应有思维链字符数');
+    const onDisk = await f.store.readReasoning('rs', r.turn);
+    assert.ok(onDisk !== null, 'reasoning/<turn>.md 必须落盘');
+    assert.match(onDisk, /先看她此刻在做什么/);
+
+    // 关键不变量：思维链是**响应侧**证据，绝不能回流进 history——
+    // history 每一行都会被 assemble 映射成下一次请求的消息，混进去就改变了被测对象本身。
+    const history = await f.store.readHistory('rs');
+    for (const m of history) {
+      assert.equal(m.reasoning, undefined, 'history 行不得带 reasoning 字段');
+      assert.doesNotMatch(m.text, /先看她此刻在做什么/, '思维链文本不得混进 history');
+    }
+  } finally { f.cleanup(); }
+});
+
+test('截断判据以 finish 为准（反例：token 代理量会漏报）', async () => {
+  const f = fixture();
+  try {
+    // outputTokens(20) < maxTokens(200) ⇒ 旧代理量会报「没截断」；权威信号说 max-tokens ⇒ 必须报截断
+    const deps = {
+      ...f.deps,
+      complete: async () => ({
+        text: '半句话就断了',
+        reasoning: '',
+        finishKind: 'max-tokens',
+        usage: { inputTokens: 1, outputTokens: 20, cacheReadTokens: 0 },
+      }),
+    };
+    const r = await runTurn(deps, { session: 'tr', cardId: 'test-card', input: 'x' });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.truncated, true, 'finish=max-tokens 必须判截断——代理量在这一格会漏报');
+    assert.equal(r.reasoningPath, '', '没有思维链时不落盘、路径为空串');
+    assert.equal(r.reasoningChars, 0);
+  } finally { f.cleanup(); }
+});
+
+test('没收到 finish（异常中断）时才回退到 token 代理量', async () => {
+  const f = fixture();
+  try {
+    const deps = {
+      ...f.deps,
+      complete: async () => ({
+        text: 'x',
+        reasoning: '',
+        finishKind: '',
+        usage: { inputTokens: 1, outputTokens: 200, cacheReadTokens: 0 },
+      }),
+    };
+    const r = await runTurn(deps, { session: 'tr2', cardId: 'test-card', input: 'x' });
+    assert.equal(r.finishKind, '');
+    assert.equal(r.truncated, true, 'finishKind 空 ⇒ 回退代理量（outputTokens 200 >= maxTokens 200）');
+  } finally { f.cleanup(); }
+});
+
+test('空正文必须响亮失败，且**不得**写进历史（真实产出的空转失败模式）', async () => {
+  const f = fixture();
+  try {
+    // 2026-09-23 实测形状：模型把预算烧在思维链上、正文一字未出，而 finish 仍是 stop
+    // ⇒ token 判据看不出来。若当成功，会往 history 写一条 0 字符 assistant 行污染后续轮。
+    const deps = {
+      ...f.deps,
+      complete: async () => ({
+        text: '   \n  ',
+        reasoning: '开始写。\n\n好，开写。\n\n开写。',
+        finishKind: 'stop',
+        usage: { inputTokens: 3331, outputTokens: 2835, cacheReadTokens: 50560 },
+      }),
+    };
+    const r = await runTurn(deps, { session: 'empty', cardId: 'test-card', input: '看她翻页的手指。' });
+
+    assert.equal(r.ok, false, '空正文必须判失败');
+    assert.match(r.reason, /空正文/);
+    assert.match(r.reason, /finish=stop/, '失败原因要带结束原因，便于归因');
+    assert.match(r.reason, /思维链 12 字/, '失败原因要带思维链字数（去空白口径）');
+    assert.equal(r.finishKind, 'stop');
+    assert.equal(r.usage.outputTokens, 2835, 'token 花了就要报出来（成本账）');
+
+    // 关键：失败也要留下诊断证据——思维链必须落盘
+    assert.ok(r.reasoningPath !== '', '思维链是唯一诊断证据，失败路径也必须落盘');
+    assert.match(await f.store.readReasoning('empty', r.turn), /开写/);
+
+    // 关键：失败轮不得追加任何历史行。
+    // ⚠ 注意口径：`ensureOpening` 在调用模型**之前**就写了卡自带开场白，所以失败轮过后
+    // history 里仍会有那 1 条开场白——这不是污染。要断言的是「没多出用户行 / 没多出空行」。
+    const after = await f.store.readHistory('empty');
+    assert.equal(after.length, 1, '失败轮只应留下卡自带开场白，不得追加任何行');
+    assert.equal(after[0].role, 'assistant');
+    assert.ok(after[0].text.length > 0, '留下的那条是开场白');
+    assert.ok(!after.some((m) => m.role === 'user'), '用户输入不得入库（否则下一次请求会看到「用户说了话但助手没答」）');
+    assert.ok(!after.some((m) => m.text.trim() === ''), '不得出现空正文行');
+  } finally { f.cleanup(); }
+});
+
+test('每轮的「条件 + 读数」必须落盘（主人要求：每次请求可见 · 全流程透明）', async () => {
+  const f = fixture();
+  try {
+    const r = await runTurn(f.deps, { session: 'rec', cardId: 'test-card', input: '我走进去。' });
+    assert.equal(r.ok, true, r.reason);
+    assert.ok(r.turnRecordPath !== '', '必须给出轮次记录路径');
+    const rec = await f.store.readTurnRecord('rec', r.turn);
+    assert.ok(rec !== null, 'turns/<turn>.json 必须存在');
+
+    // 实验条件必须齐——否则读数不可归因（换过参数之后两轮读数不是一回事）
+    assert.equal(rec.cardId, 'test-card');
+    assert.equal(rec.provider, 'test');
+    assert.equal(rec.model, 'test-model');
+    assert.equal(rec.maxTokens, 200);
+    assert.equal(rec.temperature, 0.9);
+    assert.equal(rec.budgetChars, 24000);
+    assert.equal(typeof rec.presetId, 'string', '预设 id 要记（区分是哪个预设跑出来的）');
+    assert.ok(typeof rec.manifestHash === 'string' && rec.manifestHash.length > 0, '装配单 hash 要记——把请求与读数钉在一起');
+
+    // 读数必须齐
+    assert.equal(rec.ok, true);
+    assert.equal(rec.finishKind, 'stop');
+    assert.equal(rec.truncated, false);
+    assert.equal(rec.a1Ok, true);
+    assert.equal(rec.usage.outputTokens, 20);
+    assert.ok(rec.textChars > 0, '正文字数');
+    assert.ok(rec.reasoningChars > 0, '思维链字数');
+    assert.ok(typeof rec.manifestPath === 'string' && rec.manifestPath !== '');
+  } finally { f.cleanup(); }
+});
+
+test('失败轮同样要落盘轮次记录（事后追因靠它）', async () => {
+  const f = fixture();
+  try {
+    const deps = {
+      ...f.deps,
+      complete: async () => ({
+        text: '',
+        reasoning: '想',
+        finishKind: 'stop',
+        usage: { inputTokens: 1, outputTokens: 9, cacheReadTokens: 0 },
+      }),
+    };
+    const r = await runTurn(deps, { session: 'rec2', cardId: 'test-card', input: 'x' });
+    assert.equal(r.ok, false);
+    const rec = await f.store.readTurnRecord('rec2', r.turn);
+    assert.ok(rec !== null, '失败也要留记录，否则事后查不到当时的结束原因');
+    assert.equal(rec.ok, false);
+    assert.equal(rec.failure, 'empty-text');
+    assert.equal(rec.finishKind, 'stop');
+    assert.equal(rec.usage.outputTokens, 9, 'token 花了就要记账');
   } finally { f.cleanup(); }
 });

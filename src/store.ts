@@ -170,6 +170,67 @@ export class Store {
     }
   }
 
+  /**
+   * Write the model's reasoning (思维链) for one turn to `reasoning/<turn>.md`.
+   *
+   * 为什么单独落盘而不是塞进 `history.jsonl`：history 的每一行都会**回流进下一次请求**
+   * （`assemble` 把 history 映射成消息），往里加字段会把思维链带进上下文、改变被测对象本身。
+   * 思维链是**响应侧**证据，与 `manifests/`（请求侧证据）并列，互不污染。
+   *
+   * @param sessionId - session directory name.
+   * @param turn - turn number (same numbering as `manifests/`).
+   * @param text - raw reasoning text; empty string ⇒ nothing is written.
+   * @returns the file path, or `''` when there was no reasoning to persist.
+   */
+  async writeReasoning(sessionId: string, turn: number, text: string): Promise<string> {
+    if (text.trim().length === 0) return '';
+    const dir = join(this.sessionDir(sessionId), 'reasoning');
+    await this.ensure(dir);
+    const path = join(dir, `${String(turn).padStart(4, '0')}.md`);
+    await writeFile(path, text, 'utf8');
+    return path;
+  }
+
+  async readReasoning(sessionId: string, turn: number): Promise<string | null> {
+    try {
+      return await readFile(join(this.sessionDir(sessionId), 'reasoning', `${String(turn).padStart(4, '0')}.md`), 'utf8');
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Write one turn's **conditions + readings** to `turns/<turn>.json`.
+   *
+   * 为什么需要它（2026-09-23，主人要求「每次的请求要可见，相当于全流程透明」）：
+   * `manifests/` 只记**请求**（装配了什么），`history.jsonl` 只记**正文**，`reasoning/` 只记**思维链**——
+   * 而「这一轮是哪张卡 / 哪个预设 / 哪个模型 / 什么参数跑的」以及「`finishKind` / `truncated` / usage」
+   * **一处都没落盘**，只在工具返回值里一闪而过。于是产出读数**无法归因**（换过参数后两轮读数不可比），
+   * 失败（如空正文）事后也**查不到当时的结束原因**。
+   * 本记录把三者钉在一起，并补齐实验条件。
+   *
+   * @param sessionId - session directory name.
+   * @param turn - turn number (same numbering as `manifests/`).
+   * @param record - plain JSON-serialisable record; written verbatim.
+   * @returns the file path.
+   */
+  async writeTurnRecord(sessionId: string, turn: number, record: Record<string, unknown>): Promise<string> {
+    const dir = join(this.sessionDir(sessionId), 'turns');
+    await this.ensure(dir);
+    const path = join(dir, `${String(turn).padStart(4, '0')}.json`);
+    await writeFile(path, JSON.stringify(record, null, 2), 'utf8');
+    return path;
+  }
+
+  async readTurnRecord(sessionId: string, turn: number): Promise<Record<string, unknown> | null> {
+    try {
+      const raw = await readFile(join(this.sessionDir(sessionId), 'turns', `${String(turn).padStart(4, '0')}.json`), 'utf8');
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
   async writeState(sessionId: string, state: Record<string, unknown>): Promise<void> {
     const dir = this.sessionDir(sessionId);
     await this.ensure(dir);

@@ -19,6 +19,20 @@ export interface CompletionUsage {
 
 export interface Completion {
   text: string;
+  /**
+   * 思维链原文（`reasoning-delta` 拼接；模型没产思维链时为空串）。
+   *
+   * ⚠ 2026-09-23 补：此前 `complete` 只接 `text-delta`，**思维链被整个丢弃**——
+   * 而它同时又是 `maxTokens` 的消耗方（见 `TurnResult.truncated`），
+   * 于是「预算被谁吃掉」既看不见也说不清。思维链是「预设 → 产出」的**因果中介**，
+   * 不看它就只能把产出好坏归因到黑盒。
+   */
+  reasoning: string;
+  /**
+   * `finish` chunk 的结束原因 kind（`stop` / `max-tokens` / `tool-calls` / `aborted` / `error`）。
+   * 空串 = 流里没收到 `finish`（异常中断）。这是**截断的权威判据**，取代按 token 数猜。
+   */
+  finishKind: string;
   usage: CompletionUsage;
 }
 
@@ -35,6 +49,11 @@ export interface TurnDeps {
   budgetChars: number;
   maxTokens: number;
   temperature: number;
+  /**
+   * 模型路由（provider/model）。落进 `turns/<turn>.json`，让每一轮的读数**可归因**——
+   * 换过路由或参数之后，两轮读数就不是一回事，记录里必须看得出这一点。
+   */
+  route: { provider: string; model: string };
 }
 
 export interface TurnRequest {
@@ -59,6 +78,18 @@ export interface TurnResult {
    * 就断了，而 usage 显示 1600（预算被思维链吃掉）。截断必须显式报出，不许静默。
    */
   truncated: boolean;
+  /** 思维链落盘路径（`reasoning/<turn>.md`）；模型没产思维链时为 `''`。 */
+  reasoningPath: string;
+  /** 思维链字符数（去空白）；0 = 本回合无思维链。 */
+  reasoningChars: number;
+  /** `finish` chunk 的结束原因 kind；空串 = 流里没收到 `finish`。 */
+  finishKind: string;
+  /**
+   * 本轮的**条件 + 读数**记录落盘路径（`turns/<turn>.json`）。
+   * 把「哪张卡 / 哪个预设 / 哪个模型 / 什么参数」与「finish / usage / 字数」钉在一起，
+   * 让产出读数可归因、失败可事后追因。
+   */
+  turnRecordPath: string;
   manifest: Manifest | null;
   manifestPath: string;
   /** A1: the body rebuilt from the persisted manifest equals the body we sent. */
@@ -101,7 +132,8 @@ export async function resolveLorebook(
 /** Run one prose turn end to end. Returns the text plus every reading A1/A4 need. */
 export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<TurnResult> {
   const fail = (reason: string): TurnResult => ({
-    ok: false, reason, turn: 0, text: '', truncated: false, manifest: null, manifestPath: '',
+    ok: false, reason, turn: 0, text: '', truncated: false, reasoningPath: '', reasoningChars: 0,
+    finishKind: '', turnRecordPath: '', manifest: null, manifestPath: '',
     a1Ok: false, a1Detail: '', requestChars: 0, messages: 0, usage: { ...EMPTY_USAGE },
   });
 
@@ -126,11 +158,80 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
   await deps.store.snapshot(request.session, turn);
   const manifestPath = await deps.store.writeManifest(request.session, manifest);
 
+  /**
+   * 本轮的**实验条件**（不随结果变）。读数在各分支里补齐后与它一起落盘，
+   * 于是「这一轮是哪张卡/哪个预设/哪个模型/什么参数跑的」永远与读数钉在一起（可归因）。
+   */
+  const conditions = {
+    turn,
+    atMs: Date.now(),
+    cardId: request.cardId,
+    cardName: hit.card.name,
+    presetId: effective.id,
+    presetName: effective.name,
+    provider: deps.route.provider,
+    model: deps.route.model,
+    maxTokens: deps.maxTokens,
+    temperature: deps.temperature,
+    budgetChars: deps.budgetChars,
+    requestChars: manifest.totalChars,
+    messages: manifest.entries.length,
+    manifestHash: manifest.hash,
+    manifestPath,
+    ...(request.systemPromptOverride === undefined || request.systemPromptOverride.length === 0
+      ? {}
+      : { systemPromptOverrideChars: request.systemPromptOverride.length }),
+  };
+
   let completion: Completion;
   try {
     completion = await deps.complete(messages, { purpose: 'prose', maxTokens: deps.maxTokens, temperature: deps.temperature });
   } catch (err) {
     return fail(`模型调用失败：${(err as Error).message}`);
+  }
+
+  // 空正文 = **失败**，不是「成功但没内容」。
+  //
+  // 2026-09-23 真实产出实测（会话 real-v34-s1 第 4 轮）：模型把整个输出预算烧在推演上——
+  // 思维链 192 行、反复说「开始写/开写」，正文却一个字都没产出，而 `finishKind` 仍是 `stop`
+  // ⇒ **按 token 判据完全看不出来**（outputTokens 2835 远小于上限）。旧代码判它 ok:true，
+  // 于是一条 0 字符的 assistant 行被写进 history，**污染其后每一轮**（模型会读到空的自己）。
+  //
+  // 纪律（§5.10 静默失败 = 死亡温床）：拒绝写入历史，并把失败原因说清。
+  // 思维链即使在这一路也要落盘——它是这次失败**唯一的诊断证据**（不落就等于把真因丢掉）。
+  if (completion.text.trim().length === 0) {
+    const diagPath = await deps.store.writeReasoning(request.session, turn, completion.reasoning);
+    const reasoningChars = completion.reasoning.replace(/\s+/g, '').length;
+    // 失败也要留完整记录：事后追因靠的就是「当时的条件 + 结束原因 + 思维链字数」三件。
+    const turnRecordPath = await deps.store.writeTurnRecord(request.session, turn, {
+      ...conditions,
+      ok: false,
+      failure: 'empty-text',
+      textChars: 0,
+      reasoningChars,
+      reasoningPath: diagPath,
+      finishKind: completion.finishKind,
+      truncated: false,
+      usage: completion.usage,
+      a1Ok: false,
+      a1Detail: '未校验（无正文可交付）',
+    });
+    return {
+      ...fail('模型返回空正文'
+        + '（finish=' + (completion.finishKind === '' ? '无 finish' : completion.finishKind)
+        + '，思维链 ' + String(reasoningChars) + ' 字，outputTokens ' + String(completion.usage.outputTokens) + '）'
+        + '——已拒绝写入历史，避免污染后续轮次；思维链已落盘供诊断'),
+      turn,
+      reasoningPath: diagPath,
+      reasoningChars,
+      finishKind: completion.finishKind,
+      turnRecordPath,
+      usage: completion.usage,
+      manifest,
+      manifestPath,
+      requestChars: manifest.totalChars,
+      messages: manifest.entries.length,
+    };
   }
 
   // A1 校验：从**磁盘回读**装配单重建 body，与实际发出的 body 比对
@@ -142,12 +243,40 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
   await deps.store.appendHistory(request.session, { role: 'assistant', text: completion.text });
   await deps.store.writeState(request.session, state);
 
+  // 思维链单独落盘（响应侧证据，与 manifests/ 的请求侧证据并列）——落盘失败不该毁掉这一轮，
+  // 但也不许静默：路径为空即「本回合没有思维链」，异常则原样冒泡给调用方。
+  const reasoningPath = await deps.store.writeReasoning(request.session, turn, completion.reasoning);
+  const reasoningChars = completion.reasoning.replace(/\s+/g, '').length;
+  // 权威判据优先：提供方说 max-tokens 就是截断；只有没收到 finish 时才回退到 token 代理量。
+  const truncated = completion.finishKind === 'max-tokens'
+    || (completion.finishKind === '' && completion.usage.outputTokens >= deps.maxTokens);
+
+  const turnRecordPath = await deps.store.writeTurnRecord(request.session, turn, {
+    ...conditions,
+    ok: true,
+    textChars: completion.text.replace(/\s+/g, '').length,
+    textRawChars: completion.text.length,
+    reasoningChars,
+    reasoningPath,
+    finishKind: completion.finishKind,
+    truncated,
+    usage: completion.usage,
+    a1Ok: verify.ok,
+    a1Detail: verify.ok
+      ? `重建 hash 一致（${verify.rebuiltHash.slice(0, 12)}…）`
+      : verify.differences.slice(0, 3).join('; '),
+  });
+
   return {
     ok: true,
     reason: '',
     turn,
     text: completion.text,
-    truncated: completion.usage.outputTokens >= deps.maxTokens,
+    truncated,
+    reasoningPath,
+    reasoningChars,
+    finishKind: completion.finishKind,
+    turnRecordPath,
     manifest,
     manifestPath,
     a1Ok: verify.ok,

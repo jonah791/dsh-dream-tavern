@@ -8,6 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assemble } from '../lib/assemble.js';
+import { parsePresetFile } from '../lib/preset-file.js';
 
 const card = {
   id: 'c1', name: '落位夹具',

@@ -75,8 +75,27 @@
 
 ```sh
 node scripts/acceptance.mjs          # 一条命令：判据表 + 真实数据读数 + A7 旁路面
+node scripts/preset-cost.mjs --preset "E:/alice/tavern/色欲之罪.json"   # 迭代预设第一步：块级成本表（不调模型）
 npm test                             # 仅判据测试
 ```
+
+### 全流程透明：一轮到底发了什么、回了什么
+
+每一轮的四类证据都在盘上，且 `turns/<轮>.json` 把**实验条件**（卡 / 预设 / 路由 / `maxTokens` /
+`temperature` / `budgetChars`）与**读数**（`finishKind` / `truncated` / `usage` / A1 / 字数）钉在一起
+——否则换过参数之后两轮读数不是一回事，失败也事后查不到当时的结束原因。
+
+```sh
+# 逐轮摊开：条件 → 请求（逐 entry）→ 响应（正文/思维链）→ 读数 → 落点
+node scripts/turn-report.mjs --session <会话id> --dataDir <dataDir> [--turn N] [--entries]
+
+# 导出可度量稿：思维链落 drafts/reasoning/ 子目录（同层会被度量器当语料），
+# --prose-only 只取 <dream_body> 内的散文（协议包装约占输出 40%，混进去读数不成立），原始另存 drafts/raw/
+node scripts/export-draft.mjs --session <会话id> --dataDir <dataDir> --reasoning --prose-only
+```
+
+`tavern_play` 的返回值同样带 `finishKind` / `reasoningChars` / `reasoningPath` / `turnRecordPath`
+——**失败时也带**（空正文判失败但思维链仍落盘：它是唯一诊断证据）。
 
 退出码：`0` 全量通过 ｜ `1` 判据失败 ｜ `2` 判据通过但**真数据不可达**（PASS 降级）。
 
