@@ -27,6 +27,122 @@ export function renderTemplate(text: string, scope: TemplateScope): string {
   );
 }
 
+/**
+ * ST 宏渲染状态（2026-09-23 新增）：变量表按**装配顺序**累积。
+ *
+ * 为什么是「按顺序累积」而不是预扫描：ST 的语义就是顺序执行（与 `prompt_order` 同序），
+ * 同名 `setvar` 后出现的**覆盖**先出现的（实测该预设 `rencheng_var` / `zishu_var` /
+ * `qianghua_var` / `ban_word_var` / `thinking_budget` 都被 set 两次），
+ * `addvar` 则**追加**（`dream_protocol` 由 4 次调用累积成协议清单）。
+ */
+export interface StMacroState {
+  /** 变量表：`setvar` 写、`addvar` 追加、`getvar` 读。 */
+  vars: Map<string, string>;
+  /** `{{char}}` 的取值（角色名）；拿不到时该宏**原样保留**。 */
+  charName?: string;
+  /** `{{user}}` 的取值（玩家名）；拿不到时该宏**原样保留**。 */
+  userName?: string;
+}
+
+/** 一次 ST 宏渲染的结果。 */
+export interface StMacroRender {
+  text: string;
+  /** 文本里出现过 `{{trim}}` ⇒ 调用方应对**整块**做首尾去空白（ST 语义）。 */
+  trimmed: boolean;
+}
+
+/**
+ * 宏渲染最大轮数（迭代到不动点）。
+ *
+ * 为什么需要迭代：`setvar` 的值里可以**嵌套**别的宏，而正则 `[^{}]*` 只能匹配最内层。
+ * 实测该预设就有：`{{setvar::thought_of_chain_var::…{{getvar::thinking_budget}}…}}`。
+ * 上限只防病态输入（正常预设 2–3 轮收敛）。
+ */
+const MAX_MACRO_ROUNDS = 8;
+
+/**
+ * ST 宏渲染：补上预设的**变量/控制层**。
+ *
+ * ## 为什么必须有（2026-09-23 实测）
+ * 启用块里有 **35 个 ST 宏，本插件原先一个都渲染不了**——`renderTemplate` 的键正则只认
+ * `[a-zA-Z0-9_.]`，而 `{{setvar::x::v}}` 含冒号 ⇒ 不匹配 ⇒ 原样保留。
+ * 失效的是**控制层**不是装饰：`{{setvar::rencheng_var::第三人称}}`（人称变量）、
+ * `{{getvar::zishu_var}}`（字数档）、`{{getvar::thinking_budget}}`（思考预算）、
+ * `{{setvar::dream_protocol::DREAM_PLOT_OUTPUT}}`（协议名）。
+ * 产出侧可见后果：正文里出现字面量 `{{user}}`，且模型**无人称可依** ⇒ 在推理里来回摇摆。
+ *
+ * ## 语义表
+ * | 宏 | 语义 |
+ * |---|---|
+ * | `{{setvar::k::v}}` | 写变量（**覆盖**，后出现的赢）→ 输出空 |
+ * | `{{addvar::k::s}}` | 追加到已有值 → 输出空 |
+ * | `{{getvar::k}}` | 读变量；**未定义时原样保留**（理由见下） |
+ * | `{{//…}}` | 注释 → 输出空 |
+ * | `{{trim}}` | 置 `trimmed`（该块首尾去空白）→ 输出空 |
+ * | `{{char}}` / `{{user}}` | 角色名 / 玩家名；**拿不到时原样保留** |
+ * | 其他（含 `lora_constant` 这类扩展宏） | 原样保留（不猜、不静默清空） |
+ *
+ * **未定义 `getvar` 为什么保留而不返回空**：ST 返回空串，但那会让「变量没被 set」这件事
+ * **静默消失**——静默失败是本仓反复踩过的坑（AGENTS.md §5.10）。保留原文时，产出里出现的
+ * 字面量就是**可观测证据**：2026-09-23 正是靠正文里的 `{{user}}` 才发现宏整层失效。
+ *
+ * 纯函数：只读 `state`（会就地更新变量表，调用方按顺序传入同一实例）。
+ * @param text - 一个预设块的正文（未渲染）。
+ * @param state - 装配期间累积的宏状态。
+ * @returns 渲染后的文本 + 是否需要 trim。
+ */
+export function renderStMacros(text: string, state: StMacroState): StMacroRender {
+  let trimmed = false;
+  let current = text;
+  // **迭代到不动点**：`setvar` 的值里可以嵌套别的宏（实测该预设就有——
+  // `{{setvar::thought_of_chain_var::…{{getvar::thinking_budget}}…}}`），而正则只能匹配
+  // 「不含 `{` / `}` 的最内层」。于是必须：先渲染内层，再渲染外层。ST 的宏替换同样是多轮的。
+  for (let round = 0; round < MAX_MACRO_ROUNDS; round += 1) {
+    let changed = false;
+    const next = current.replace(/\{\{([^{}]*)\}\}/g, (whole, body: string) => {
+      // ⚠ **不对 `body` 整体 trim**（2026-09-23 实测修正）：`setvar` 的值必须**原样保留**，
+      // 整体 trim 会吃掉多行值末尾的换行 —— 那等于静默改写预设内容（§5.10）。
+      // 只用 trim 后的探针**识别宏名**，取值一律回到原文。
+      const raw = body;
+      const probe = raw.trim();
+      if (probe.startsWith('//')) {
+        changed = true;
+        return '';
+      }
+      if (probe === 'trim') {
+        trimmed = true;
+        changed = true;
+        return '';
+      }
+      if (probe === 'char') return state.charName ?? whole;
+      if (probe === 'user') return state.userName ?? whole;
+      const sep = raw.indexOf('::');
+      if (sep < 0) return whole;
+      const macro = raw.slice(0, sep).trim();
+      const rest = raw.slice(sep + 2);
+      if (macro === 'getvar') {
+        const value = state.vars.get(rest.trim());
+        if (value === undefined) return whole;
+        changed = true;
+        return value;
+      }
+      if (macro !== 'setvar' && macro !== 'addvar') return whole;
+      const inner = rest.indexOf('::');
+      // `{{setvar::k}}`（无值形态）⇒ 置空串；`{{setvar::k::v}}` ⇒ 置 v
+      const key = (inner < 0 ? rest : rest.slice(0, inner)).trim();
+      const value = inner < 0 ? '' : rest.slice(inner + 2);
+      if (key === '') return whole;
+      state.vars.set(key, macro === 'addvar' ? (state.vars.get(key) ?? '') + value : value);
+      changed = true;
+      return '';
+    });
+    current = next;
+    if (!changed) break;
+  }
+  return { text: current, trimmed };
+}
+
+
 function part(id: string, slot: Slot, source: string, priority: number, text: string, triggerHit?: string): ManifestPart {
   const base = { id, slot, source, priority, text, sha256: sha256(text) };
   return triggerHit === undefined ? base : { ...base, triggerHit };
@@ -47,7 +163,7 @@ function compareParts(a: ManifestPart, b: ManifestPart): number {
 
 /** Assemble one model request. Pure: no IO, no clock, no RNG. */
 export function assemble(input: AssembleInput): AssembleResult {
-  const { preset, card, lorebook, history, state, turnInput, turn, script } = input;
+  const { preset, card, lorebook, history, state, turnInput, turn, script, playerName } = input;
   const stateText = canonicalJson(state);
   const scope: TemplateScope = {
     'card.name': card.name,
@@ -76,9 +192,23 @@ export function assemble(input: AssembleInput): AssembleResult {
 
   // 1) preset blocks (declared order; unknown placeholders stay visible)
   // ⚠ **marker 块是声明不是片段**（它只说「某字段放哪」，内容来自卡片）⇒ 不进 parts。
+  //
+  // ST 宏按**块顺序**渲染（2026-09-23）：`setvar` 写进 `macroState.vars`、`getvar` 读，
+  // 于是「变量初始化块 → 后续块引用」这套控制层第一次真正生效（原先 35 个宏一个都渲染不了）。
+  // 停用块与 marker 块**不执行**其宏——与 ST 一致（未注入的条目不产生副作用）。
+  const macroState: StMacroState = {
+    vars: new Map<string, string>(),
+    charName: card.name === '' ? undefined : card.name,
+    userName: playerName === undefined || playerName === '' ? undefined : playerName,
+  };
   for (const block of preset.blocks as PresetBlock[]) {
     if (block.enabled === false || block.marker !== undefined) continue;
-    parts.push(part(`preset:${block.id}`, block.slot, `preset:${block.id}`, block.priority, renderTemplate(block.text, scope)));
+    const rendered = renderStMacros(block.text, macroState);
+    const text = renderTemplate(rendered.text, scope);
+    parts.push(part(
+      `preset:${block.id}`, block.slot, `preset:${block.id}`, block.priority,
+      rendered.trimmed ? text.trim() : text,
+    ));
   }
 
   // 2) card definition / persona / system override as first-class system fragments

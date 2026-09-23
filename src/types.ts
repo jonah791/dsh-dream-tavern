@@ -160,6 +160,13 @@ export interface AssembleInput {
   turnInput: string;
   turn: number;
   script?: { title: string; segment: string };
+  /**
+   * 玩家角色名（可选，2026-09-23 新增）：供预设里的 `{{user}}` 宏使用。
+   *
+   * 为什么是可选而不是必填：拿不到时 `{{user}}` **原样保留**（不静默清空）——保留是可观测的
+   * 证据（产出里出现字面量即说明这层没接通），而清空会让「宏没渲染」静默消失。
+   */
+  playerName?: string;
 }
 
 export interface AssembleResult {
