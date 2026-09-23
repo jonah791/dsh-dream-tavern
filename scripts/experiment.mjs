@@ -209,22 +209,34 @@ function parseReport(stdout) {
 
 const rows = []
 const missing = []
+/**
+ * 导出按**会话**缓存（2026-09-23 修）：`export-draft` 是整会话导出，却原先放在**每轮**循环里，
+ * 且**早于** turn record 检查 —— 于是空正文轮（history 里只有开场白）会先撞上 export 的
+ * 退出码 3（「除开场白外没有模型产出轮」），被误报成「export 失败」而不是「空正文」。
+ * **读数被自己的调用顺序弄反了**：最重要的结果（空正文）成了噪声。
+ * 修法：① 导出结果按会话缓存；② 先判 turn record，**成功才**需要稿。
+ */
+const exportCache = new Map()
+const exportOf = (session) => {
+  if (exportCache.has(session)) return exportCache.get(session)
+  const res = runNode([join(HERE, 'export-draft.mjs'), '--session', session, '--dataDir', dataDir, '--prose-only', '--reasoning', '--json'])
+  let value
+  if (res.status !== 0) {
+    value = { error: 'export 失败：' + (res.stderr.trim() || res.stdout.trim()) }
+  } else {
+    try {
+      value = { exported: JSON.parse(res.stdout) }
+    } catch (err) {
+      value = { error: 'export 输出不是合法 JSON：' + String(err) }
+    }
+  }
+  exportCache.set(session, value)
+  return value
+}
 for (const run of runs) {
   const sessionDir = join(dataDir, 'sessions', run.session)
   if (!existsSync(sessionDir)) {
     missing.push(run.session)
-    continue
-  }
-  const exportRes = runNode([join(HERE, 'export-draft.mjs'), '--session', run.session, '--dataDir', dataDir, '--prose-only', '--reasoning', '--json'])
-  if (exportRes.status !== 0) {
-    rows.push({ ...run, error: 'export 失败：' + (exportRes.stderr.trim() || exportRes.stdout.trim()) })
-    continue
-  }
-  let exported
-  try {
-    exported = JSON.parse(exportRes.stdout)
-  } catch (err) {
-    rows.push({ ...run, error: 'export 输出不是合法 JSON：' + String(err) })
     continue
   }
   // ── 对齐：第 n 个输入 ↔ 第 n 条 **turn record**（不是第 n 份稿）──────────
@@ -301,6 +313,13 @@ for (const run of runs) {
   const successIndex = recordFiles.slice(0, pickedIndex + 1)
     .map((f) => readRecord(f)?.ok === true)
     .filter(Boolean).length - 1
+  // 稿只在**确认该轮成功之后**才需要（懒加载 + 按会话缓存）——顺序反了会把空正文误报成导出失败
+  const exportedRes = exportOf(run.session)
+  if (exportedRes.error !== undefined) {
+    rows.push({ ...run, error: exportedRes.error })
+    continue
+  }
+  const exported = exportedRes.exported
   const draft = exported.drafts?.[successIndex]
   if (draft === undefined) {
     rows.push({
