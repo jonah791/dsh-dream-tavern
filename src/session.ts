@@ -46,6 +46,14 @@ export interface TurnDeps {
   store: Store;
   complete: Completer;
   preset: (budgetChars: number) => Preset;
+  /**
+   * 按**路径**取预设（2026-09-23 新增，可选）：供 `TurnRequest.preset` 做**单轮预设覆盖**。
+   *
+   * 为什么需要：对照实验（改前 vs 改后）原先只能靠改插件配置 + 重启来换预设，
+   * 而「迭代预设」这条环每转一圈都要这么来一次 —— 于是实验成本高到做不动。
+   * 可选 ⇒ 不接线时行为**逐字节不变**（本插件的老调用方无需改）。
+   */
+  presetFor?: (path: string) => Preset;
   budgetChars: number;
   maxTokens: number;
   temperature: number;
@@ -64,6 +72,14 @@ export interface TurnRequest {
   state?: Record<string, unknown>;
   /** Experimental override: replaces the preset's system block for this turn only. */
   systemPromptOverride?: string;
+  /**
+   * 单轮预设覆盖（2026-09-23 新增）：预设文件路径（或 `presets/` 下的 id）。
+   *
+   * 缺省 ⇒ 用 `deps.preset`（插件配置的 `presetPath`）。落进 `turns/<turn>.json` 的
+   * `presetId`/`presetName` 会自动反映**实际用到的那一份**，所以对照实验的两条臂
+   * 在记录里可区分（读数自带范围标注）。
+   */
+  preset?: string;
 }
 
 export interface TurnResult {
@@ -129,6 +145,44 @@ export async function resolveLorebook(
   return { entries: [...entries.filter((e) => !externalIds.has(e.id)), ...book.result.entries], error: '' };
 }
 
+/**
+ * 选本轮用哪一份预设（2026-09-23 新增）。
+ *
+ * - `request.preset` 未给 ⇒ `deps.preset(budgetChars)`（插件配置的 `presetPath`，原行为）
+ * - 给了 ⇒ `deps.presetFor(path)`（单轮覆盖，对照实验用）
+ *
+ * **显式指定却拿不到**时**抛错**（由调用方转成响亮失败）：绝不静默退回配置预设——
+ * 那会让对照实验的两条臂实际跑同一份预设，而读数看起来像「两种配置的差异」，结论张冠李戴。
+ * @param deps - 回合依赖。
+ * @param request - 本轮的请求（含可选预设覆盖）。
+ * @returns 本轮实际使用的预设。
+ */
+function resolveTurnPreset(deps: TurnDeps, request: TurnRequest): Preset {
+  const path = request.preset?.trim() ?? '';
+  if (path === '') return deps.preset(deps.budgetChars);
+  if (deps.presetFor === undefined) {
+    throw new Error(`本轮指定了预设「${path}」，但调用方未接线 presetFor（单轮预设覆盖不可用）`);
+  }
+  return deps.presetFor(path);
+}
+
+/**
+ * 玩家名（`{{user}}` 的取值来源）：从**会话状态**里读约定键；读不到就返回 `undefined`
+ * ⇒ 该宏**原样保留**（不编一个名字——那会静默改变角色身份）。
+ *
+ * 为什么从 state 而不是插件配置：玩家名是**每场会话**的属性（不同卡不同主角），
+ * 而配置是插件级的。卡片/预设可以通过 `<UpdateVariable>` 把它写进 state。
+ * @param state - 本轮的会话状态。
+ * @returns 玩家名；三个约定键都取不到时 `undefined`。
+ */
+function playerNameFrom(state: Record<string, unknown>): string | undefined {
+  for (const key of ['userName', 'playerName', 'user']) {
+    const value = state[key];
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  }
+  return undefined;
+}
+
 /** Run one prose turn end to end. Returns the text plus every reading A1/A4 need. */
 export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<TurnResult> {
   const fail = (reason: string): TurnResult => ({
@@ -147,13 +201,20 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
   const { entries: lorebook, error } = await resolveLorebook(deps.store, hit.card, request.worldbook);
   if (error.length > 0) return fail(error);
 
-  const base = deps.preset(deps.budgetChars);
+  let base: Preset;
+  try {
+    base = resolveTurnPreset(deps, request);
+  } catch (err) {
+    // 预设覆盖失败 ⇒ 响亮失败（不静默退回配置预设：那会让对照实验的两条臂跑同一份）
+    return fail((err as Error).message);
+  }
   const effective: Preset = request.systemPromptOverride === undefined || request.systemPromptOverride.length === 0
     ? base
     : { ...base, blocks: [{ id: 'override', slot: 'system', priority: 999, text: request.systemPromptOverride }, ...base.blocks] };
 
   const { manifest, messages } = assemble({
     preset: effective, card: hit.card, lorebook, history, state, turnInput: request.input, turn,
+    playerName: playerNameFrom(state),
   });
   await deps.store.snapshot(request.session, turn);
   const manifestPath = await deps.store.writeManifest(request.session, manifest);
@@ -167,6 +228,17 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
     atMs: Date.now(),
     cardId: request.cardId,
     cardName: hit.card.name,
+    /**
+     * 本轮输入的摘要（2026-09-23 新增）：**逐轮可对齐**的钥匙。
+     *
+     * 为什么必须有（实测事故）：turn record 按 turn 号落盘 ⇒ **同一 turn 的重试会覆盖**
+     * 前一次的失败记录。而空正文轮拒绝写历史 ⇒ 稿序会整体前移。两者叠加时，收口脚本
+     * 只能按「第 n 条记录 ↔ 第 n 个输入」对齐，于是 discipline 臂（第 1 轮失败、第 2 轮
+     * 同 turn 成功）的**第 2 次产出被误当成第 1 轮的读数**，报告还会说「第 2 轮没跑」。
+     * 记下输入摘要后，收口脚本能按**内容**对齐，覆盖与偏移都不再影响归因。
+     */
+    inputChars: request.input.length,
+    inputHead: request.input.slice(0, 40),
     presetId: effective.id,
     presetName: effective.name,
     provider: deps.route.provider,
@@ -325,14 +397,21 @@ export async function runAuxTurn(
 
   // 意图指令放在**末尾**（近因位），避免与卡/世界书争夺注意力
   const turn = history.length + 1;
+  let auxPreset: Preset;
+  try {
+    auxPreset = resolveTurnPreset(deps, request);
+  } catch (err) {
+    return miss((err as Error).message);
+  }
   const { manifest, messages } = assemble({
-    preset: deps.preset(deps.budgetChars),
+    preset: auxPreset,
     card: hit.card,
     lorebook,
     history,
     state,
     turnInput: `${request.input}\n\n${request.instruction}`,
     turn,
+    playerName: playerNameFrom(state),
   });
   const manifestPath = await deps.store.writeManifest(request.session, manifest);
 

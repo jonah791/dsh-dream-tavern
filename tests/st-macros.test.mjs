@@ -33,7 +33,7 @@ if (!existsSync(assembleLib)) {
   process.exit(1);
 }
 
-const { renderStMacros } = await import(pathToFileURL(assembleLib).href);
+const { renderStMacros, assemble } = await import(pathToFileURL(assembleLib).href);
 
 /** 新宏状态。 */
 function freshState(extra = {}) {
@@ -145,4 +145,46 @@ test('真实预设：启用块渲染后不再残留 setvar / getvar / addvar', (
   assert.deepEqual(leftovers, [],
     `变量类宏必须全部渲染掉；残留 ${leftovers.length} 处：\n${leftovers.join('\n')}`);
   assert.ok(rendered > 0, '前提：至少渲染过一个含宏的启用块');
+});
+
+// ── 卡片字段的宏（2026-09-23 实测缺口）────────────────────────────────────
+// 现场：卡「仙母种情」的字段带 `{{user}}`，而宏渲染原先只作用于**预设块** ⇒ 字面量进
+// system prompt、模型**照抄**到正文（实测第一轮正文出现「{{user}} 的手还搭在门沿上」）。
+
+/** 最小可用卡：只填本测试关心的字段。 */
+function macroCard() {
+  return {
+    id: 'macro-card',
+    name: '仙母',
+    description: '{{char}} 立在窗边，{{user}} 站在门外。',
+    persona: '',
+    scenario: '',
+    firstMessage: '',
+    exampleDialogue: '',
+    systemPrompt: '',
+    postHistoryInstructions: '',
+    fields: [],
+    lorebook: [],
+  };
+}
+
+const emptyPreset = { id: 'p', name: 'p', blocks: [], budgetChars: 1000000 };
+
+function systemTextOf(result) {
+  return (result.manifest.entries.find((e) => e.slot === 'system')?.text) ?? '';
+}
+
+test('卡片字段：{{char}} 渲染为卡名；{{user}} 无来源时**原样保留**（不编名字）', () => {
+  const base = {
+    preset: emptyPreset, card: macroCard(), lorebook: [], history: [],
+    state: {}, turnInput: 'hi', turn: 1,
+  };
+  const withoutName = systemTextOf(assemble(base));
+  assert.ok(withoutName.includes('仙母 立在窗边'), '{{char}} 必须渲染为卡名（有确定来源）');
+  assert.ok(withoutName.includes('{{user}} 站在门外'),
+    '{{user}} 拿不到玩家名时必须原样保留——编一个名字会静默改变角色身份');
+
+  const withName = systemTextOf(assemble({ ...base, playerName: '阿沅' }));
+  assert.ok(withName.includes('阿沅 站在门外'), '给了 playerName 就必须渲染');
+  assert.ok(!withName.includes('{{user}}'), '有来源时不得残留字面量');
 });

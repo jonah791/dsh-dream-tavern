@@ -219,10 +219,31 @@ export function assemble(input: AssembleInput): AssembleResult {
   // ⚠ `source` 必须是**身份**（能唯一指认一段内容）：2026-09-22 质量判据（no-duplicate）第一次跑就抓到
   // persona 与 scenario 共用裸 `'card'` ⇒ 两个**不同**字段看起来像「同一来源被注入两遍」。
   // 同族标签里 preset 用 `preset:<blockId>`、lorebook 用 `lorebook:<id>`，card 也应细到字段。
+  /**
+   * 卡片字段的 ST 宏渲染（2026-09-23 新增，**独立于预设块**的变量表）。
+   *
+   * 为什么需要（实测）：卡「仙母种情」的字段里带 `{{user}}`，而宏渲染原先只作用于**预设块**
+   * ⇒ 字面量直接进了 system prompt，模型**照抄**到正文（实测第一轮正文出现「{{user}} 的手
+   * 还搭在门沿上」）。
+   *
+   * 为什么用**独立**变量表：卡片字段与预设块是两个来源，各自的 `setvar` 不应互相污染；
+   * 它们共享的只有 `char` / `user` 两个名字（来自卡片与会话，不是字段内部状态）。
+   * `{{user}}` 拿不到玩家名时**原样保留**——不编一个名字（那会静默改变角色身份）。
+   */
+  const cardMacroState: StMacroState = {
+    vars: new Map<string, string>(),
+    charName: card.name === '' ? undefined : card.name,
+    userName: playerName === undefined || playerName === '' ? undefined : playerName,
+  };
+  const renderCardMacros = (text: string): string => {
+    const r = renderStMacros(text, cardMacroState);
+    return r.trimmed ? r.text.trim() : r.text;
+  };
+
   const pushCard = (name: MarkerName, id: string, source: string, dSlot: Slot, dPriority: number, text: string): void => {
     if (text.length === 0) return;
     const p = place(name, dSlot, dPriority);
-    parts.push(part(id, p.slot, source, p.priority, text));
+    parts.push(part(id, p.slot, source, p.priority, renderCardMacros(text)));
   };
   pushCard('description', 'card:description', 'card:description', 'system', 99, card.description);
   pushCard('persona', 'card:persona', 'card:persona', 'persona_prefix', 100, card.persona);
