@@ -175,7 +175,7 @@ function resolveTurnPreset(deps: TurnDeps, request: TurnRequest): Preset {
  * @param state - 本轮的会话状态。
  * @returns 玩家名；三个约定键都取不到时 `undefined`。
  */
-function playerNameFrom(state: Record<string, unknown>): string | undefined {
+export function playerNameFrom(state: Record<string, unknown>): string | undefined {
   for (const key of ['userName', 'playerName', 'user']) {
     const value = state[key];
     if (typeof value === 'string' && value.trim() !== '') return value.trim();

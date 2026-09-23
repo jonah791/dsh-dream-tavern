@@ -142,6 +142,30 @@ export function renderStMacros(text: string, state: StMacroState): StMacroRender
   return { text: current, trimmed };
 }
 
+/**
+ * 卡片自带文本的 ST 宏渲染（**新鲜变量表**）。
+ *
+ * 用途：卡片开场白（`first_mes`）。它与卡片字段刻意不同——字段共用一份变量表
+ * （同一张卡内 `setvar` 可跨字段传递），开场白是独立一段，不该与字段互相污染。
+ *
+ * 拿不到名字时**原样保留** `{{user}}` / `{{char}}`——不编造名字，
+ * 那等于静默改写角色身份（§5.10 静默失败）。
+ *
+ * @param text - 卡片文本（未渲染）。
+ * @param charName - 角色名；空串按未知处理。
+ * @param userName - 玩家名；空串按未知处理。
+ * @returns 渲染后的文本。
+ */
+export function renderCardText(text: string, charName: string | undefined, userName: string | undefined): string {
+  const state: StMacroState = {
+    vars: new Map<string, string>(),
+    charName: charName === undefined || charName === '' ? undefined : charName,
+    userName: userName === undefined || userName === '' ? undefined : userName,
+  };
+  const r = renderStMacros(text, state);
+  return r.trimmed ? r.text.trim() : r.text;
+}
+
 
 function part(id: string, slot: Slot, source: string, priority: number, text: string, triggerHit?: string): ManifestPart {
   const base = { id, slot, source, priority, text, sha256: sha256(text) };
@@ -315,9 +339,20 @@ export function assemble(input: AssembleInput): AssembleResult {
   }
 
   history.forEach((message, index) => {
+    // `history[0]` 是**卡片开场白**（播种不变量：`ensureOpening` 只在历史为空时落一条，
+    // 且它落的正是 `card.firstMessage`）⇒ 按 ST 语义在**发送时**渲染宏。
+    //
+    // 为什么不在播种时渲染（2026-09-23 实测缺陷的修法选择）：
+    //   ① 玩家名可能到后来的回合才设定——播种时渲染 ⇒ 名字未知就把字面量**永久烤进历史**；
+    //   ② 已有会话可**追溯**修好（历史里已经存着的 `{{user}}` 同样被渲染）；
+    //   ③ ST 本身就是发送时替换。
+    // 拿不到名字时原样保留（`renderCardText` 不编造名字）。
+    //
+    // 其余历史是真实对话，**逐字发出**——模型说了什么就记什么，不得二次加工。
+    const text = index === 0 ? renderCardText(message.text, card.name, playerName) : message.text;
     entries.push(entryFrom({
       id: `hist:${index}`, slot: 'before_history', role: message.role, source: `history:${index}`,
-      priority: 0, text: message.text, parts: [],
+      priority: 0, text, parts: [],
     }));
   });
   const historyStart = entries.length - history.length;
