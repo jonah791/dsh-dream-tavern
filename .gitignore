@@ -1,3 +1,6 @@
 node_modules/
 lib/
 *.log
+
+# 会话数据（实验产物，不入库）
+dream-tavern-data/

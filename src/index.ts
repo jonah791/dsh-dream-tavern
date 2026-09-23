@@ -141,18 +141,34 @@ export function apply(ctx: Context, config: Config): void {
   if (config.provider.trim().length === 0 || config.model.trim().length === 0) {
     logger.warn('未配置 provider/model：tavern_play 会在第一轮响亮失败（不猜默认模型）')
   }
-  let presetLogged = false
-  const preset = (): Preset => {
-    if (config.presetPath.trim() === '') return defaultPreset(config.budgetChars)
+  const presetLogged = new Set<string>()
+  const presetCache = new Map<string, Preset>()
+  /**
+   * 取预设。`override` 给定时用**那一份**（单轮覆盖，对照实验用），否则用配置的 `presetPath`。
+   *
+   * 缓存按路径键（2026-09-23）：一场对照实验里同一份预设会被取几十次，每次重新解析
+   * 1.6MB JSON 是纯浪费；缓存也让「未建模清单只播报一次」有稳定的键
+   * （原先用单个布尔量 ⇒ 换预设后不再播报，静默丢了那份对账表）。
+   */
+  const preset = (override?: string): Preset => {
+    const path = override !== undefined && override.trim() !== '' ? override.trim() : config.presetPath.trim()
+    const cached = presetCache.get(path)
+    if (cached !== undefined) return cached
+    const built = buildPreset(path)
+    presetCache.set(path, built)
+    return built
+  }
+  const buildPreset = (path: string): Preset => {
+    if (path === '') return defaultPreset(config.budgetChars)
     // 配了预设文件却加载不了 ⇒ **响亮失败，绝不静默退回默认**：静默退回会让研究结论张冠李戴
     // （与「未配置 provider/model ⇒ 第一轮响亮失败，不猜」同一族纪律）。
-    const loaded = loadPresetFile(config.presetPath, config.budgetChars)
+    const loaded = loadPresetFile(path, config.budgetChars)
     if (loaded.preset === undefined) {
-      throw new Error(`预设加载失败（${config.presetPath}）：${loaded.errors.join('；')}`)
+      throw new Error(`预设加载失败（${path}）：${loaded.errors.join('；')}`)
     }
     // 桥接的**未建模清单**必须被看见（不许静默丢字段——这正是今天修过的卡内世界书那类缺陷）。
-    if (!presetLogged) {
-      presetLogged = true
+    if (!presetLogged.has(path)) {
+      presetLogged.add(path)
       const b = loaded.bridge
       if (b === undefined) {
         logger.info('预设已加载：%s（本插件格式，%d 块）', loaded.preset.name, loaded.preset.blocks.length)
@@ -216,7 +232,11 @@ export function apply(ctx: Context, config: Config): void {
   const deps: TurnDeps = {
     store,
     complete,
-    preset,
+    // 参数适配：`TurnDeps.preset` 的签名是 `(budgetChars) => Preset`（历史接口，参数未被使用——
+    // 预算取自 config），而本插件的 `preset` 现按**路径**取（单轮覆盖）。
+    preset: () => preset(),
+    // 单轮预设覆盖（2026-09-23）：让「改前 vs 改后」的对照实验不必改配置+重启。
+    presetFor: (path: string) => preset(path),
     budgetChars: config.budgetChars,
     maxTokens: config.maxTokens,
     temperature: config.temperature,
@@ -378,6 +398,7 @@ export function apply(ctx: Context, config: Config): void {
       turn: { type: 'number', description: '轮次（缺省 1）' },
       worldbook: { type: 'string', description: '可选：导入的世界书名' },
       state: { type: 'string', description: '可选：状态 JSON 文本（缺省 {}）' },
+      preset: { type: 'string', description: '可选：本次装配使用的预设（文件路径，或 presets/ 下的 id）。缺省用插件配置的 presetPath。' },
     },
     output: {
       render: jsonRender,
@@ -400,7 +421,7 @@ export function apply(ctx: Context, config: Config): void {
         },
       },
     },
-    async execute(args: { cardId: string; session?: string; input: string; turn?: number; worldbook?: string; state?: string }) {
+    async execute(args: { cardId: string; session?: string; input: string; turn?: number; worldbook?: string; state?: string; preset?: string }) {
       const hit = await store.readCard(args.cardId)
       if (hit === null) {
         return { ok: false, reason: `找不到卡「${args.cardId}」`, manifestPath: '', hash: '', turn: 0, messages: 0, totalChars: 0, overBudget: false, dropped: [], a1RebuildOk: false, a1Detail: '', slots: [], parts: [] }
@@ -424,7 +445,7 @@ export function apply(ctx: Context, config: Config): void {
       }
 
       const { manifest, messages } = assemble({
-        preset: preset(), card: hit.card, lorebook, history, state, turnInput: args.input, turn,
+        preset: preset(args.preset), card: hit.card, lorebook, history, state, turnInput: args.input, turn,
       })
       const manifestPath = await store.writeManifest(sessionId, manifest)
       // A1：从**磁盘回读**的装配单重建 body，与将要发出的 body 比对（能抓出序列化漂移）
@@ -471,6 +492,7 @@ export function apply(ctx: Context, config: Config): void {
       worldbook: { type: 'string', description: '可选：世界书名' },
       state: { type: 'string', description: '可选：状态 JSON 文本' },
       systemPrompt: { type: 'string', description: '可选：本轮 system 覆盖（用于实验对照）' },
+      preset: { type: 'string', description: '可选：本轮使用的预设（文件路径，或 presets/ 下的 id）。缺省用插件配置的 presetPath。用于**单轮预设对照**——改前 vs 改后不必改配置+重启。' },
     },
     output: {
       render: jsonRender,
@@ -499,7 +521,7 @@ export function apply(ctx: Context, config: Config): void {
         },
       },
     },
-    async execute(args: { cardId: string; session: string; input: string; worldbook?: string; state?: string; systemPrompt?: string }) {
+    async execute(args: { cardId: string; session: string; input: string; worldbook?: string; state?: string; systemPrompt?: string; preset?: string }) {
       const fail = (reason: string): {
         ok: boolean; reason: string; session: string; turn: number; text: string; manifestHash: string;
         manifestPath: string; a1Ok: boolean; a1Detail: string; requestChars: number; messages: number;
@@ -525,6 +547,7 @@ export function apply(ctx: Context, config: Config): void {
         input: args.input,
         ...(args.worldbook === undefined ? {} : { worldbook: args.worldbook }),
         ...(args.systemPrompt === undefined ? {} : { systemPromptOverride: args.systemPrompt }),
+        ...(args.preset === undefined ? {} : { preset: args.preset }),
         ...(stateArg === undefined ? {} : { state: stateArg }),
       })
       if (!result.ok) {
