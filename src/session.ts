@@ -10,11 +10,24 @@
 import { assemble, messagesFromManifest, verifyAgainstActual } from './assemble.ts';
 import type { Store } from './store.ts';
 import type { Card, ChatMessage, LorebookEntry, Manifest, Preset } from './types.ts';
+import { acceptsAfterRetries, judgeCompletion, type AttemptRecord, type CompletionJudge } from './completion-judge.ts';
 
 export interface CompletionUsage {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+}
+
+/**
+ * `finish` chunk 里 `error` / `aborted` 携带的失败详情（`failure: { code, message }`）。
+ *
+ * ⚠ 2026-09-25 修（任务 t-91746d6a）：此前只取 `chunk.reason.kind`，把 `failure` **整个丢掉**——
+ * 于是「某路由 5/5 finish=error」只留下一个 `error` 字样，**没有 message / code 可归因**。
+ * 结束原因的形状见 harness 的 `FinishReasonMap`（`error` 与 `aborted` 两支都带 `failure`）。
+ */
+export interface FinishFailure {
+  code: string
+  message: string
 }
 
 export interface Completion {
@@ -33,6 +46,8 @@ export interface Completion {
    * 空串 = 流里没收到 `finish`（异常中断）。这是**截断的权威判据**，取代按 token 数猜。
    */
   finishKind: string;
+  /** `error` / `aborted` 的失败详情；其余结束原因与「流里没收到 finish」为 `null`。 */
+  finishFailure: FinishFailure | null;
   usage: CompletionUsage;
 }
 
@@ -62,6 +77,14 @@ export interface TurnDeps {
    * 换过路由或参数之后，两轮读数就不是一回事，记录里必须看得出这一点。
    */
   route: { provider: string; model: string };
+  /**
+   * 形态判据的标记表（2026-09-25）：`proseMarkers` = 正文协议块标记；`chainMarkers` = 思考链标记。
+   * **空数组 ⇒ 该项不检查**（插件不猜预设的协议约定；两者皆空时行为与旧版一致）。
+   */
+  proseMarkers: readonly string[];
+  chainMarkers: readonly string[];
+  /** 失败重试上限（**含首次**）：1 = 不重试（默认 ⇒ 老调用方行为逐字节不变）。 */
+  retryMax: number;
 }
 
 export interface TurnRequest {
@@ -80,6 +103,20 @@ export interface TurnRequest {
    * 在记录里可区分（读数自带范围标注）。
    */
   preset?: string;
+  /**
+   * 逐轮采样参数覆盖（2026-09-25 新增，可选）：供**同批对照**实验。
+   *
+   * 为什么必须有：`temperature` / `maxTokens` 此前只能走插件配置（改配置 + 重启才生效）
+   * ⇒ 采样参数无法在**同一批**里对照，只能跨批比较；而实测（2026-09-25）同一**逐字节
+   * 相同**的请求跨批波动剧烈（control 链泄漏 0/5 → 4/5）⇒ 跨批比较不可靠，温度这类
+   * 问题于是根本问不出来（**仪器缺口**，不是实验设计问题）。
+   *
+   * 语义：缺省不传 ⇒ 取插件配置值（行为逐字节不变，老调用方无需改）；传了 ⇒ 以传的为准，
+   * 且落进 `turns/<轮>.json` 的是**实际生效值**（读数自带范围标注）。
+   * 范围：本覆盖作用于**正文轮**（`purpose: 'prose'`）；候选 / 结算轮仍用配置值。
+   */
+  temperature?: number;
+  maxTokens?: number;
 }
 
 export interface TurnResult {
@@ -100,6 +137,20 @@ export interface TurnResult {
   reasoningChars: number;
   /** `finish` chunk 的结束原因 kind；空串 = 流里没收到 `finish`。 */
   finishKind: string;
+  /** `error` / `aborted` 的失败详情（`code` / `message`）；无详情为 `null`。 */
+  finishFailure: FinishFailure | null;
+  /**
+   * 逐次尝试的形态与读数（**含失败的那几次**）。
+   *
+   * ⚠ 2026-09-25（任务 t-1b8be614）：此前它**没有进 `TurnResult` 的类型**——运行时靠对象展开塞进去、
+   * 类型层不存在 ⇒ 工具层理所当然地看不见它，「三次重试后勉强接受」与「一次干净的成功」在返回体里
+   * 完全同形（都是 `ok:true` / `reason:''`）。**标记不可见 = 没标记。**
+   */
+  attempts: AttemptRecord[];
+  /** 本轮接受的是**带链产出**（重试用尽后的降级接受，真有正文）——报告里必须能单列。 */
+  chainInContent: boolean;
+  /** 命中的链标记（`chainInContent` 为真时非空）。 */
+  chainHit: string;
   /**
    * 本轮的**条件 + 读数**记录落盘路径（`turns/<turn>.json`）。
    * 把「哪张卡 / 哪个预设 / 哪个模型 / 什么参数」与「finish / usage / 字数」钉在一起，
@@ -187,7 +238,8 @@ export function playerNameFrom(state: Record<string, unknown>): string | undefin
 export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<TurnResult> {
   const fail = (reason: string): TurnResult => ({
     ok: false, reason, turn: 0, text: '', truncated: false, reasoningPath: '', reasoningChars: 0,
-    finishKind: '', turnRecordPath: '', manifest: null, manifestPath: '',
+    finishKind: '', finishFailure: null, turnRecordPath: '', manifest: null, manifestPath: '',
+    attempts: [], chainInContent: false, chainHit: '',
     a1Ok: false, a1Detail: '', requestChars: 0, messages: 0, usage: { ...EMPTY_USAGE },
   });
 
@@ -223,6 +275,13 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
    * 本轮的**实验条件**（不随结果变）。读数在各分支里补齐后与它一起落盘，
    * 于是「这一轮是哪张卡/哪个预设/哪个模型/什么参数跑的」永远与读数钉在一起（可归因）。
    */
+  /**
+   * 逐轮采样参数覆盖（缺省取配置）：`conditions` 与模型调用**共用同一对值**——
+   * 两处各算一次，迟早会对不上（读数与实发参数不一致 = 归因失效）。
+   */
+  const temperature = request.temperature ?? deps.temperature;
+  const maxTokens = request.maxTokens ?? deps.maxTokens;
+
   const conditions = {
     turn,
     atMs: Date.now(),
@@ -243,8 +302,8 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
     presetName: effective.name,
     provider: deps.route.provider,
     model: deps.route.model,
-    maxTokens: deps.maxTokens,
-    temperature: deps.temperature,
+    maxTokens,
+    temperature,
     budgetChars: deps.budgetChars,
     requestChars: manifest.totalChars,
     messages: manifest.entries.length,
@@ -255,48 +314,92 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
       : { systemPromptOverrideChars: request.systemPromptOverride.length }),
   };
 
-  let completion: Completion;
-  try {
-    completion = await deps.complete(messages, { purpose: 'prose', maxTokens: deps.maxTokens, temperature: deps.temperature });
-  } catch (err) {
-    return fail(`模型调用失败：${(err as Error).message}`);
+  /**
+   * 调模型 → **形态判定** →（可选）**重试**（2026-09-25）。
+   *
+   * 为什么不满足于「调一次、判空」：实测（课题 §6.13/§6.14）模型对这份提示形状**每次约 50% 概率**
+   * 把思考链当正文输出（或干脆只产思维链），而三个层八个干预**全部改不动它** ⇒
+   * **重试是与病因无关的唯一可靠兜底**。逐次留痕（`attempts[]`）：不许只留最后一次，
+   * 否则「重试了几次、每次什么形态」事后查不到。
+   */
+  const maxAttempts = Math.max(1, deps.retryMax);
+  const attempts: AttemptRecord[] = [];
+  // `!`：循环体保证至少执行一次（`maxAttempts >= 1`）⇒ 出口时 `completion` 必然已赋值；
+  // TS 的确定性赋值分析证明不了这一点，故**显式**断言（不改可选类型——那会让后面每处都判空）。
+  let completion!: Completion;
+  // 初值也走同一个判定函数（空串 ⇒ 必然是 empty-text）——**不在调用方重复拼词表**。
+  let judge: CompletionJudge = judgeCompletion('', { proseMarkers: deps.proseMarkers, chainMarkers: deps.chainMarkers });
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      completion = await deps.complete(messages, { purpose: 'prose', maxTokens, temperature });
+    } catch (err) {
+      return fail(`模型调用失败：${(err as Error).message}`);
+    }
+    judge = judgeCompletion(completion.text, { proseMarkers: deps.proseMarkers, chainMarkers: deps.chainMarkers });
+    attempts.push({
+      attempt,
+      verdict: judge.kind,
+      contentChars: completion.text.replace(/\s+/g, '').length,
+      reasoningChars: completion.reasoning.replace(/\s+/g, '').length,
+      finishKind: completion.finishKind,
+      usage: { ...completion.usage },
+    });
+    if (judge.kind === 'ok') break;          // 完全可用
+    if (attempt === maxAttempts) break;      // 次数用尽 ⇒ 交给下面的接受/失败裁决
+    // 其余形态（空正文 / 无正文块 / 带链）都值得再试一次——同一请求的失败是**随机**的。
   }
 
-  // 空正文 = **失败**，不是「成功但没内容」。
+  // 产出不可用 = **失败**，不是「成功但没内容」。
   //
-  // 2026-09-23 真实产出实测（会话 real-v34-s1 第 4 轮）：模型把整个输出预算烧在推演上——
-  // 思维链 192 行、反复说「开始写/开写」，正文却一个字都没产出，而 `finishKind` 仍是 `stop`
-  // ⇒ **按 token 判据完全看不出来**（outputTokens 2835 远小于上限）。旧代码判它 ok:true，
-  // 于是一条 0 字符的 assistant 行被写进 history，**污染其后每一轮**（模型会读到空的自己）。
+  // 2026-09-23 实测（会话 real-v34-s1 第 4 轮）：模型把整个输出预算烧在推演上——思维链 192 行、
+  // 反复说「开始写/开写」，正文一个字都没产出，而 `finishKind` 仍是 `stop` ⇒ **按 token 判据完全
+  // 看不出来**。旧代码判它 ok:true，于是一条 0 字符的 assistant 行被写进 history，**污染其后每一轮**。
+  // 2026-09-25 追加：还有一种「**非空但只有链**」（直连网关实测 4/5，课题 §6.13）——旧判据同样放过它。
   //
-  // 纪律（§5.10 静默失败 = 死亡温床）：拒绝写入历史，并把失败原因说清。
+  // 纪律（§5.10 静默失败 = 死亡温床）：拒绝写入历史，并把失败原因说清（含**形态**与**尝试次数**）。
   // 思维链即使在这一路也要落盘——它是这次失败**唯一的诊断证据**（不落就等于把真因丢掉）。
-  if (completion.text.trim().length === 0) {
+  if (!acceptsAfterRetries(judge)) {
     const diagPath = await deps.store.writeReasoning(request.session, turn, completion.reasoning);
     const reasoningChars = completion.reasoning.replace(/\s+/g, '').length;
-    // 失败也要留完整记录：事后追因靠的就是「当时的条件 + 结束原因 + 思维链字数」三件。
+    // 侧车轨迹（t-91746d6a）：失败详情一行一次尝试落盘——这一类轮次是「不可用产出」，
+    // 详情只活在工具返回值里翻页即失（§5.22：关键机制必须落侧车轨迹，不能只写 logger）。
+    await deps.store.appendFinishTrace(request.session, {
+      at: Date.now(), turn, attempt: attempts.length, ok: false,
+      failure: judge.kind, finishKind: completion.finishKind,
+      finishFailure: completion.finishFailure,
+      outputTokens: completion.usage.outputTokens, reasoningChars,
+    });
+    // 失败也要留完整记录：事后追因靠的是「当时的条件 + 形态 + 逐次尝试 + 结束原因 + 思维链字数」。
     const turnRecordPath = await deps.store.writeTurnRecord(request.session, turn, {
       ...conditions,
       ok: false,
-      failure: 'empty-text',
-      textChars: 0,
+      failure: judge.kind,
+      textChars: completion.text.replace(/\s+/g, '').length,
       reasoningChars,
       reasoningPath: diagPath,
       finishKind: completion.finishKind,
+      finishFailure: completion.finishFailure,
       truncated: false,
       usage: completion.usage,
+      attempts,
+      chainHit: judge.chainHit,
       a1Ok: false,
       a1Detail: '未校验（无正文可交付）',
     });
     return {
-      ...fail('模型返回空正文'
-        + '（finish=' + (completion.finishKind === '' ? '无 finish' : completion.finishKind)
+      ...fail(`模型产出不可用（${judge.label} / ${judge.kind}）`
+        + '（尝试 ' + String(attempts.length) + '/' + String(maxAttempts) + ' 次'
+        + '，finish=' + (completion.finishKind === '' ? '无 finish' : completion.finishKind)
         + '，思维链 ' + String(reasoningChars) + ' 字，outputTokens ' + String(completion.usage.outputTokens) + '）'
         + '——已拒绝写入历史，避免污染后续轮次；思维链已落盘供诊断'),
       turn,
       reasoningPath: diagPath,
       reasoningChars,
       finishKind: completion.finishKind,
+      finishFailure: completion.finishFailure,
+      attempts,
+      chainInContent: false,
+      chainHit: judge.chainHit,
       turnRecordPath,
       usage: completion.usage,
       manifest,
@@ -331,13 +434,30 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
     reasoningChars,
     reasoningPath,
     finishKind: completion.finishKind,
+    finishFailure: completion.finishFailure,
     truncated,
     usage: completion.usage,
+    // 重试与形态留痕（2026-09-25）：`attempts` 逐次记（含失败的那几次），
+    // `chainInContent` 让「带链但确有正文」在报告里**可单列**（此前只能靠人眼读首行判）。
+    attempts,
+    chainInContent: judge.kind === 'chain-in-content',
+    chainHit: judge.chainHit,
     a1Ok: verify.ok,
     a1Detail: verify.ok
       ? `重建 hash 一致（${verify.rebuiltHash.slice(0, 12)}…）`
       : verify.differences.slice(0, 3).join('; '),
   });
+
+  // 成功但**结束原因不是 stop**（如 `max-tokens`）也要落侧车：这类轮次「有正文但不完整」，
+  // 是产出质量的**可疑样本**，必须在轨迹里可查（t-91746d6a）。
+  if (completion.finishKind !== 'stop') {
+    await deps.store.appendFinishTrace(request.session, {
+      at: Date.now(), turn, attempt: attempts.length, ok: true,
+      finishKind: completion.finishKind,
+      finishFailure: completion.finishFailure,
+      outputTokens: completion.usage.outputTokens, reasoningChars,
+    });
+  }
 
   return {
     ok: true,
@@ -348,6 +468,10 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
     reasoningPath,
     reasoningChars,
     finishKind: completion.finishKind,
+    finishFailure: completion.finishFailure,
+    attempts,
+    chainInContent: judge.kind === 'chain-in-content',
+    chainHit: judge.chainHit,
     turnRecordPath,
     manifest,
     manifestPath,

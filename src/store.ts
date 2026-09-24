@@ -222,6 +222,26 @@ export class Store {
     return path;
   }
 
+  /**
+   * 追加一行「模型结束原因」侧车轨迹（`<会话目录>/llm-finish-trace.jsonl`）。
+   *
+   * 为什么（2026-09-25 · 任务 t-91746d6a）：`finish != stop` 意味着这一轮不可用或可疑
+   * （`error` / `max-tokens` / `aborted`），而这类轮次**可能连轮次记录都没写成**——
+   * 失败详情只活在工具返回值里，翻页即失。侧车一行一次尝试，可 tail / grep 归因
+   * （§5.22：关键机制必须落侧车轨迹，不能只写 logger）。
+   * 落盘失败**不抛**（观测绝不反噬主流程），返回 false 供调用方记数。
+   */
+  async appendFinishTrace(sessionId: string, entry: Record<string, unknown>): Promise<boolean> {
+    try {
+      const dir = this.sessionDir(sessionId)
+      await this.ensure(dir)
+      await writeFile(join(dir, 'llm-finish-trace.jsonl'), JSON.stringify(entry) + '\n', { encoding: 'utf8', flag: 'a' })
+      return true
+    } catch {
+      return false
+    }
+  }
+
   async readTurnRecord(sessionId: string, turn: number): Promise<Record<string, unknown> | null> {
     try {
       const raw = await readFile(join(this.sessionDir(sessionId), 'turns', `${String(turn).padStart(4, '0')}.json`), 'utf8');

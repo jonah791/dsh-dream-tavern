@@ -19,7 +19,8 @@ import type { Message } from '@deepseek-ai/dsh-llm/message'
 // 0.1.7：`Context.llm` 由 @deepseek-ai/dsh-llm 的根模块声明；只 import 子路径拿不到该增强。
 import type {} from '@deepseek-ai/dsh-llm'
 import { assemble, messagesFromManifest, verifyAgainstActual } from './assemble.ts'
-import { ensureOpening, playerNameFrom, runTurn, type Completer, type TurnDeps } from './session.ts'
+import type { AttemptRecord } from './completion-judge.ts'
+import { ensureOpening, playerNameFrom, runTurn, type Completer, type FinishFailure, type TurnDeps } from './session.ts'
 import { createTavernPanel } from './panel.ts'
 import { defaultPreset } from './preset.ts'
 import { loadPresetFile } from './preset-file.ts'
@@ -58,6 +59,15 @@ export interface Config {
    * 缺了它，本插件被指定的第一个目的（**迭代预设**）在代码上不可达。
    */
   presetPath: string
+  /**
+   * 形态判据的标记表（2026-09-25）——与下方 zod schema **同名同形**（类型与值两个声明必须同步改，
+   * 漏一个就是「schema 认了、类型不认」或反过来的编译错：本次实测先只改了 schema，tsc 当场报
+   * `Property 'proseMarkers' does not exist on type 'Config'`）。空数组 ⇒ 不检查该项。
+   */
+  proseMarkers: string[]
+  chainMarkers: string[]
+  /** 失败重试上限（含首次）：1 = 不重试（默认）。 */
+  retryMax: number
 }
 
 export const Config = z.object({
@@ -81,6 +91,20 @@ export const Config = z.object({
   budgetChars: z.number().default(24000),
   /** 预设文件路径（JSON）。空 ⇒ 内建默认。见 `Config` 上方的说明。 */
   presetPath: z.string().default(''),
+  /**
+   * 形态判据的标记表（2026-09-25）。**空数组 ⇒ 不检查该项**（默认与旧版逐字节一致）：
+   * 插件不猜预设的协议约定——「正文块长什么样」「链长什么样」都是**预设侧**的知识，
+   * 由部署侧在配置里声明（本机 web profile 已声明）。判据逻辑见 `completion-judge.ts`。
+   */
+  proseMarkers: z.array(z.string()).default([]),
+  chainMarkers: z.array(z.string()).default([]),
+  /**
+   * 失败重试上限（**含首次**）：1 = 不重试（默认）。
+   * 依据（课题 §6.13/§6.14）：直连网关已复现「链进正文/空正文」，且三个层八个干预**全部无改善**
+   * ⇒ 单次调用约 50% 失败是模型×网关的固有倾向 ⇒ **重试是与病因无关的唯一可靠兜底**
+   * （重试输入基本相同 ⇒ 大部分命中 prompt cache，增量成本低）。
+   */
+  retryMax: z.number().default(1),
 })
 
 const PLUGIN = 'agent-dream-tavern'
@@ -183,6 +207,10 @@ export function apply(ctx: Context, config: Config): void {
     return loaded.preset
   }
 
+  /** 把 `finish` 的失败详情渲染成一行（`code: message`）；无详情 = 空串。 */
+  const renderFinishFailure = (f: FinishFailure | null): string =>
+    f === null ? '' : (f.code === '' ? f.message : f.code + ': ' + f.message)
+
   /**
    * 唯一的模型入口：把共享回合层的 `ChatMessage[]` 翻成 harness 消息并流式取回。
    * 工具、面板、三个 Agent 全部经过这里——没有第二条通往模型的路。
@@ -199,6 +227,8 @@ export function apply(ctx: Context, config: Config): void {
     // 否则各段会粘成一句，分析时看不出「模型分了几次想」。
     let reasoningIndex = -1
     let finishKind = ''
+    // fail-loud（t-91746d6a）：`error` / `aborted` 的失败详情必须捕下来——它是唯一的归因线索。
+    let finishFailure: FinishFailure | null = null
     let inputTokens = 0
     let outputTokens = 0
     let cacheReadTokens = 0
@@ -217,7 +247,14 @@ export function apply(ctx: Context, config: Config): void {
       }
       // `finish.reason.kind` 是提供方给的**权威**结束原因（含 `max-tokens`）——
       // 用它判截断，比 `outputTokens >= maxTokens` 这个代理量可靠。
-      else if (chunk.type === 'finish') finishKind = chunk.reason.kind
+      else if (chunk.type === 'finish') {
+        finishKind = chunk.reason.kind
+        // 结束原因的形状见 harness `FinishReasonMap`：只有 `error` / `aborted` 两支带 `failure`。
+        const failure = (chunk.reason as { failure?: { code?: unknown; message?: unknown } }).failure
+        finishFailure = failure === undefined
+          ? null
+          : { code: String(failure.code ?? ''), message: String(failure.message ?? '') }
+      }
       else if (chunk.type === 'usage') {
         const usage = chunk.usage as unknown as Record<string, number | undefined>
         inputTokens = usage['inputTokens'] ?? usage['input'] ?? 0
@@ -225,7 +262,7 @@ export function apply(ctx: Context, config: Config): void {
         cacheReadTokens = usage['cacheReadTokens'] ?? usage['cacheRead'] ?? 0
       }
     }
-    return { text, reasoning, finishKind, usage: { inputTokens, outputTokens, cacheReadTokens } }
+    return { text, reasoning, finishKind, finishFailure, usage: { inputTokens, outputTokens, cacheReadTokens } }
   }
 
   /** 工具与面板共用同一份依赖（判据 A7：无旁路）。 */
@@ -241,6 +278,9 @@ export function apply(ctx: Context, config: Config): void {
     maxTokens: config.maxTokens,
     temperature: config.temperature,
     // 路由随轮次落盘（turns/<turn>.json）——读数可归因的前提。
+    proseMarkers: config.proseMarkers,
+    chainMarkers: config.chainMarkers,
+    retryMax: config.retryMax,
     route: { provider: config.provider, model: config.model },
   }
   const turnDeps = (): TurnDeps => deps
@@ -496,6 +536,8 @@ export function apply(ctx: Context, config: Config): void {
       state: { type: 'string', description: '可选：状态 JSON 文本' },
       systemPrompt: { type: 'string', description: '可选：本轮 system 覆盖（用于实验对照）' },
       preset: { type: 'string', description: '可选：本轮使用的预设（文件路径，或 presets/ 下的 id）。缺省用插件配置的 presetPath。用于**单轮预设对照**——改前 vs 改后不必改配置+重启。' },
+      temperature: { type: 'number', description: '可选：本轮采样温度覆盖（缺省用插件配置）。**采样参数只有逐轮覆盖才能同批对照**——跨批比较已被实测证伪（同一逐字节请求跨批波动剧烈）。' },
+      maxTokens: { type: 'number', description: '可选：本轮输出上限覆盖（缺省用插件配置）。' },
     },
     output: {
       render: jsonRender,
@@ -518,23 +560,54 @@ export function apply(ctx: Context, config: Config): void {
           cacheReadTokens: { type: 'number' },
           truncated: { type: 'boolean' },
           finishKind: { type: 'string' },
+          finishFailure: { type: 'string' },
           reasoningChars: { type: 'number' },
           reasoningPath: { type: 'string' },
           turnRecordPath: { type: 'string' },
+          // 重试与形态的**可见性**（任务 t-1b8be614）：此前「三次重试后勉强接受」的轮次在返回体里
+          // 与「一次干净的成功」长得一模一样（都是 ok:true / reason:''）——标记不可见 = 没标记。
+          attempts: {
+            type: 'array',
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                attempt: { type: 'number' },
+                verdict: { type: 'string' },
+                contentChars: { type: 'number' },
+                reasoningChars: { type: 'number' },
+                finishKind: { type: 'string' },
+                // `AttemptRecord.usage` 必须声明：output.schema 是**严格**校验
+                // （additionalProperties: false），漏一个字段整条工具调用就被判无效——
+                // 2026-09-25 真机验收当场抓到（`value.attempts[0].usage is not a declared property`）。
+                usage: {
+                  type: 'object', additionalProperties: false,
+                  properties: {
+                    inputTokens: { type: 'number' },
+                    outputTokens: { type: 'number' },
+                    cacheReadTokens: { type: 'number' },
+                  },
+                },
+              },
+            },
+          },
+          chainInContent: { type: 'boolean' },
+          chainHit: { type: 'string' },
         },
       },
     },
-    async execute(args: { cardId: string; session: string; input: string; worldbook?: string; state?: string; systemPrompt?: string; preset?: string }) {
+    async execute(args: { cardId: string; session: string; input: string; worldbook?: string; state?: string; systemPrompt?: string; preset?: string; temperature?: number; maxTokens?: number }) {
       const fail = (reason: string): {
         ok: boolean; reason: string; session: string; turn: number; text: string; manifestHash: string;
         manifestPath: string; a1Ok: boolean; a1Detail: string; requestChars: number; messages: number;
         inputTokens: number; outputTokens: number; cacheReadTokens: number; truncated: boolean;
         finishKind: string; reasoningChars: number; reasoningPath: string;
+        attempts: AttemptRecord[]; chainInContent: boolean; chainHit: string; finishFailure: string;
       } => ({
         ok: false, reason, session: args.session, turn: 0, text: '', manifestHash: '', manifestPath: '',
         a1Ok: false, a1Detail: '', requestChars: 0, messages: 0,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, truncated: false,
         finishKind: '', reasoningChars: 0, reasoningPath: '',
+        attempts: [], chainInContent: false, chainHit: '', finishFailure: '',
       })
 
       let stateArg: Record<string, unknown> | undefined
@@ -551,6 +624,8 @@ export function apply(ctx: Context, config: Config): void {
         ...(args.worldbook === undefined ? {} : { worldbook: args.worldbook }),
         ...(args.systemPrompt === undefined ? {} : { systemPromptOverride: args.systemPrompt }),
         ...(args.preset === undefined ? {} : { preset: args.preset }),
+        ...(args.temperature === undefined ? {} : { temperature: args.temperature }),
+        ...(args.maxTokens === undefined ? {} : { maxTokens: args.maxTokens }),
         ...(stateArg === undefined ? {} : { state: stateArg }),
       })
       if (!result.ok) {
@@ -571,9 +646,13 @@ export function apply(ctx: Context, config: Config): void {
           cacheReadTokens: result.usage.cacheReadTokens,
           truncated: result.truncated,
           finishKind: result.finishKind,
+          finishFailure: renderFinishFailure(result.finishFailure),
           reasoningChars: result.reasoningChars,
           reasoningPath: result.reasoningPath,
           turnRecordPath: result.turnRecordPath,
+          attempts: result.attempts,
+          chainInContent: result.chainInContent,
+          chainHit: result.chainHit,
         }
       }
       return {
@@ -593,9 +672,13 @@ export function apply(ctx: Context, config: Config): void {
         cacheReadTokens: result.usage.cacheReadTokens,
         truncated: result.truncated,
         finishKind: result.finishKind,
+        finishFailure: renderFinishFailure(result.finishFailure),
         reasoningChars: result.reasoningChars,
         reasoningPath: result.reasoningPath,
         turnRecordPath: result.turnRecordPath,
+        attempts: result.attempts,
+        chainInContent: result.chainInContent,
+        chainHit: result.chainHit,
       }
     },
   }))

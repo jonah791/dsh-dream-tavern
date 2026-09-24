@@ -35,6 +35,11 @@ function fixture() {
     maxTokens: 200,
     temperature: 0.9,
     route: { provider: 'test', model: 'test-model' },
+    // 形态判据的标记表（2026-09-25）：**空数组 ⇒ 不检查该项**，且 retryMax=1 ⇒ 不重试
+    // ⇒ 本夹具行为与旧版**逐字节一致**（既有断言全部照旧生效）。需要判据的用例自己声明标记。
+    proseMarkers: [],
+    chainMarkers: [],
+    retryMax: 1,
     complete: async (messages, options) => {
       const last = messages.at(-1);
       return {
@@ -342,6 +347,162 @@ test('每轮的「条件 + 读数」必须落盘（主人要求：每次请求�
     assert.ok(rec.textChars > 0, '正文字数');
     assert.ok(rec.reasoningChars > 0, '思维链字数');
     assert.ok(typeof rec.manifestPath === 'string' && rec.manifestPath !== '');
+  } finally { f.cleanup(); }
+});
+
+test('逐轮 temperature/maxTokens 覆盖：传了用传的、落盘记实际生效值、不传回落配置', async () => {
+  const f = fixture();
+  try {
+    // 传了：模型调用与轮次记录都必须用**覆盖值**（否则读数与实发参数不一致 ⇒ 归因失效）
+    const seen = [];
+    const deps = {
+      ...f.deps,
+      complete: async (messages, options) => {
+        seen.push({ ...options });
+        return {
+          text: '覆盖轮正文。', reasoning: '', finishKind: 'stop',
+          usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0 },
+        };
+      },
+    };
+    const r = await runTurn(deps, { session: 'ovr', cardId: 'test-card', input: '我走进去。', temperature: 0.3, maxTokens: 50 });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(seen.at(-1).temperature, 0.3, '模型调用必须收到覆盖温度');
+    assert.equal(seen.at(-1).maxTokens, 50, '模型调用必须收到覆盖上限');
+    const rec = await f.store.readTurnRecord('ovr', r.turn);
+    assert.equal(rec.temperature, 0.3, '轮次记录必须记**实际生效值**（读数自带范围标注）');
+    assert.equal(rec.maxTokens, 50);
+
+    // 不传：回落配置值（回归——老调用方行为逐字节不变）
+    const r2 = await runTurn(deps, { session: 'dflt', cardId: 'test-card', input: '我走进去。' });
+    assert.equal(r2.ok, true, r2.reason);
+    assert.equal(seen.at(-1).temperature, 0.9, '不传 ⇒ 用配置值');
+    assert.equal(seen.at(-1).maxTokens, 200);
+    const rec2 = await f.store.readTurnRecord('dflt', r2.turn);
+    assert.equal(rec2.temperature, 0.9);
+    assert.equal(rec2.maxTokens, 200);
+  } finally { f.cleanup(); }
+});
+
+test('形态判据 + 重试：空正文 → 只有链 → 正常；逐次留痕，历史只写成功那一次', async () => {
+  const f = fixture();
+  try {
+    const seq = [
+      { text: '', reasoning: '想了很多，一个字没写。' },
+      { text: '〇、识人：这是思考链，不是正文。', reasoning: '把链当正文了。' },
+      { text: '<dream_plot>正文来了。</dream_plot>', reasoning: '这次对了。' },
+    ];
+    let calls = 0;
+    const deps = {
+      ...f.deps,
+      proseMarkers: ['<dream_plot>'],
+      chainMarkers: ['〇、识人'],
+      retryMax: 3,
+      complete: async () => {
+        const s = seq[Math.min(calls, seq.length - 1)];
+        calls += 1;
+        return { text: s.text, reasoning: s.reasoning, finishKind: 'stop', usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0 } };
+      },
+    };
+    const r = await runTurn(deps, { session: 'retry', cardId: 'test-card', input: '我走进去。' });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(calls, 3, '应当恰好调了 3 次（前两次判为不可用 ⇒ 重试）');
+    assert.ok(r.text.includes('<dream_plot>'), '交付的必须是成功那一次的正文');
+
+    const rec = await f.store.readTurnRecord('retry', r.turn);
+    assert.equal(rec.ok, true);
+    assert.equal(rec.attempts.length, 3, '逐次留痕：三次都要记（不许只留最后一次）');
+    assert.deepEqual(rec.attempts.map((a) => a.verdict), ['empty-text', 'chain-in-content', 'ok']);
+    assert.equal(rec.chainInContent, false, '最终那次不带链');
+
+    const history = await f.store.readHistory('retry');
+    assert.equal(history.filter((m) => m.role === 'assistant').length, 2, '开场白 + 成功那一次（失败的不写入）');
+  } finally { f.cleanup(); }
+});
+
+test('重试用尽但最后一次「带链且有正文」⇒ 接受并标记 chainInContent（故事确实交付了）', async () => {
+  const f = fixture();
+  try {
+    let calls = 0;
+    const deps = {
+      ...f.deps,
+      proseMarkers: ['<dream_plot>'],
+      chainMarkers: ['〇、识人'],
+      retryMax: 2,
+      complete: async () => {
+        calls += 1;
+        return { text: '〇、识人：链在开头。<dream_plot>正文</dream_plot>', reasoning: '', finishKind: 'stop', usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0 } };
+      },
+    };
+    const r = await runTurn(deps, { session: 'chain', cardId: 'test-card', input: '我走进去。' });
+    assert.equal(r.ok, true, '有正文就不该整轮丢弃：' + r.reason);
+    assert.equal(calls, 2, '试满 retryMax 次');
+    // t-1b8be614 的判据：**返回体**必须能区分「勉强接受」与「一次干净的成功」。
+    // 此前两者同形（ok:true / reason:''）——标记不可见 = 没标记。
+    assert.equal(r.chainInContent, true, '返回体要能看出这是带链接受的轮次');
+    assert.equal(r.chainHit, '〇、识人', '命中的链标记要回显');
+    assert.equal(r.attempts.length, 2, '逐次尝试要回显，不许只活在轮次记录里');
+    assert.equal(r.attempts[0].verdict, 'chain-in-content');
+    const rec = await f.store.readTurnRecord('chain', r.turn);
+    assert.equal(rec.chainInContent, true, '带链必须显式标记（报告要能单列）');
+    assert.equal(rec.attempts.length, 2);
+  } finally { f.cleanup(); }
+});
+
+test('finish=error 的失败详情必须三处留存：结果 / 轮次记录 / 侧车轨迹（t-91746d6a）', async () => {
+  const f = fixture();
+  try {
+    const deps = {
+      ...f.deps,
+      complete: async () => ({
+        text: '', reasoning: '想了但没写。', finishKind: 'error',
+        finishFailure: { code: 'PROVIDER_ERROR', message: 'provider unavailable' },
+        usage: { inputTokens: 1, outputTokens: 0, cacheReadTokens: 0 },
+      }),
+    };
+    const r = await runTurn(deps, { session: 'err', cardId: 'test-card', input: '我走进去。' });
+    assert.equal(r.ok, false);
+    // ① 结果里带着：它是唯一的归因线索（此前只留一个 `error` 字样）
+    assert.deepEqual(r.finishFailure, { code: 'PROVIDER_ERROR', message: 'provider unavailable' });
+    // ② 轮次记录里带着：事后追因看的是落盘，不是回忆
+    const rec = await f.store.readTurnRecord('err', r.turn);
+    assert.equal(rec.finishKind, 'error');
+    assert.deepEqual(rec.finishFailure, { code: 'PROVIDER_ERROR', message: 'provider unavailable' });
+    // ③ 侧车轨迹里带着：这一类轮次可能连记录都没写成，必须有一行可 tail / grep 的轨迹
+    const tracePath = join(r.turnRecordPath, '..', '..', 'llm-finish-trace.jsonl');
+    const trace = readFileSync(tracePath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(trace.length, 1, '非 stop 的每一次尝试都要落一行');
+    assert.equal(trace[0].ok, false);
+    assert.equal(trace[0].failure, 'empty-text', '形态要与判据一致');
+    assert.equal(trace[0].finishKind, 'error');
+    assert.deepEqual(trace[0].finishFailure, { code: 'PROVIDER_ERROR', message: 'provider unavailable' });
+  } finally { f.cleanup(); }
+});
+
+test('重试用尽仍是空正文 ⇒ 硬失败：拒绝写入历史，attempts 记全，原因含形态与次数', async () => {
+  const f = fixture();
+  try {
+    let calls = 0;
+    const deps = {
+      ...f.deps,
+      retryMax: 3,
+      complete: async () => {
+        calls += 1;
+        return { text: '', reasoning: '只想了没写。', finishKind: 'stop', usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0 } };
+      },
+    };
+    const r = await runTurn(deps, { session: 'fail', cardId: 'test-card', input: '我走进去。' });
+    assert.equal(r.ok, false);
+    assert.ok(r.reason.includes('empty-text'), '原因要含形态：' + r.reason);
+    assert.ok(r.reason.includes('尝试 3/3'), '原因要含尝试次数：' + r.reason);
+    assert.equal(calls, 3);
+
+    const history = await f.store.readHistory('fail');
+    assert.equal(history.filter((m) => m.role === 'assistant').length, 1, '失败轮不得写入历史（只有开场白）');
+    const rec = await f.store.readTurnRecord('fail', r.turn);
+    assert.equal(rec.ok, false);
+    assert.equal(rec.failure, 'empty-text');
+    assert.equal(rec.attempts.length, 3);
   } finally { f.cleanup(); }
 });
 
