@@ -336,6 +336,14 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
       return fail(`模型调用失败：${(err as Error).message}`);
     }
     judge = judgeCompletion(completion.text, { proseMarkers: deps.proseMarkers, chainMarkers: deps.chainMarkers });
+    // 逐次产出落盘（判据只标记、不销毁）：这是「判据说 no-prose / empty-text」时**唯一**能复核的材料。
+    // 落盘失败不拦主流程——用 `catch` 退化成空路径，绝不因为留证而弄坏这一轮。
+    let contentPath = '';
+    try {
+      contentPath = await deps.store.writeAttempt(request.session, turn, attempt, completion.text);
+    } catch {
+      contentPath = '';
+    }
     attempts.push({
       attempt,
       verdict: judge.kind,
@@ -343,6 +351,7 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<Tur
       reasoningChars: completion.reasoning.replace(/\s+/g, '').length,
       finishKind: completion.finishKind,
       usage: { ...completion.usage },
+      contentPath,
     });
     if (judge.kind === 'ok') break;          // 完全可用
     if (attempt === maxAttempts) break;      // 次数用尽 ⇒ 交给下面的接受/失败裁决

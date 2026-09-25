@@ -83,6 +83,13 @@ export interface AttemptRecord {
   reasoningChars: number
   finishKind: string
   usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number }
+  /**
+   * 本次尝试产出的落盘路径（`attempts/<turn>-<n>.md`）。
+   *
+   * **判据打回的样本也要留**：没有它，`verdict` 只是一个不可复核的断言——
+   * 判断者（爱丽丝）无法亲读产出、自己判断「真不合格」还是「判据误杀」。
+   */
+  contentPath: string
 }
 
 /**

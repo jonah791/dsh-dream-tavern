@@ -191,6 +191,31 @@ export class Store {
     return path;
   }
 
+  /**
+   * 把**单次尝试的产出**落盘（`attempts/<turn>-<n>.md`）——判据打回的样本也必须留。
+   *
+   * 为什么（2026-09-25 · 主人「不要让程序代替你做判断」）：此前 `attempts[]` 只留 `verdict` /
+   * `contentChars` 这类**读数**，产出本身不落盘 ⇒ 判据说 `no-prose` 时，判断者**既不能确认
+   * 也不能推翻**。真实案例：某轮 attempt 1 产出 3,823 字符被判不合格，事后翻遍 `history.jsonl`
+   * / `snapshots/` / `manifests/` / `llm-finish-trace` / provider 日志都找不到——**永久丢失**。
+   * **判据可以标记，但不许销毁证据**：判断权在人，而判断需要看得见东西。
+   *
+   * 与 `writeReasoning` 的差异：**空产出也写文件**（空文件本身就是「这次真的一字未出」的证据）。
+   *
+   * @param sessionId - session directory name.
+   * @param turn - turn number (same numbering as `manifests/`).
+   * @param attempt - 第几次尝试（1 起）。
+   * @param text - raw completion text；空串也落盘。
+   * @returns the file path.
+   */
+  async writeAttempt(sessionId: string, turn: number, attempt: number, text: string): Promise<string> {
+    const dir = join(this.sessionDir(sessionId), 'attempts');
+    await this.ensure(dir);
+    const path = join(dir, `${String(turn).padStart(4, '0')}-${String(attempt)}.md`);
+    await writeFile(path, text, 'utf8');
+    return path;
+  }
+
   async readReasoning(sessionId: string, turn: number): Promise<string | null> {
     try {
       return await readFile(join(this.sessionDir(sessionId), 'reasoning', `${String(turn).padStart(4, '0')}.md`), 'utf8');

@@ -574,6 +574,7 @@ export function apply(ctx: Context, config: Config): void {
                 attempt: { type: 'number' },
                 verdict: { type: 'string' },
                 contentChars: { type: 'number' },
+                contentPath: { type: 'string' },
                 reasoningChars: { type: 'number' },
                 finishKind: { type: 'string' },
                 // `AttemptRecord.usage` 必须声明：output.schema 是**严格**校验
