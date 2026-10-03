@@ -158,6 +158,10 @@ node scripts/context-report.mjs --data <dataDir> <session>
 
 ## 已知限制（诚实边界）
 
+- **数据目录沿用历史名**（2026-10-03 正名时**故意未迁移**）：部署值 `dataDir` 仍是
+  `E:/alice/tavern/dream-tavern-data`，里面是 11 份实验报告与 `tqb-*` 质量基准，共 **86 MB / 1625 文件**。
+  迁移收益低于风险——patch 里是显式路径，名字跟不跟得上都不影响运行。
+  源码默认值已改为 `model-test-data` ⇒ **新部署用新名，老部署不动**（不必以为这是漏改）。
 - **推理模型的思维链也算进 `maxTokens`**：实测上限 1600 时 `usage` 报满 1600，而**正文只剩 195 字**
   就断在句子中间（预算被思维链吃掉）。`modeltest_play` 与面板 `play` 动作会返回 `truncated` 标记，
   **不静默**（判据：`outputTokens >= maxTokens`）。建议 `maxTokens ≥ 3000`。
