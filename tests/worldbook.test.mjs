@@ -1,11 +1,11 @@
 /**
  * 世界书迁移：ST 格式 → 本模型的解释层。
  *
- * 夹具纪律：只读主人的世界书目录；路径由 `DREAM_TAVERN_WORLDS` 提供，
+ * 夹具纪律：只读主人的世界书目录；路径由 `MODEL_TEST_WORLDS` 提供，
  * 未设置时整组跳过（不假绿）。
  *
  * 跑法：
- *   DREAM_TAVERN_WORLDS=".../default-user/worlds" node --test tests/worldbook.test.mjs
+ *   MODEL_TEST_WORLDS=".../default-user/worlds" node --test tests/worldbook.test.mjs
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,7 +13,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { importWorldbook, normalizeKeys, positionToSlot, describeImport } from '../lib/worldbook.js';
 
-const DIR = process.env.DREAM_TAVERN_WORLDS ?? '';
+const DIR = process.env.MODEL_TEST_WORLDS ?? '';
 const books = (() => {
   if (!DIR) return [];
   try {
@@ -74,7 +74,7 @@ test('entries 为数组形态也能导入（ST 存在两种编码）', () => {
   assert.equal(entries[0].id, '1');
 });
 
-test('迁移实测：主人的全部世界书都能导入且不丢字段', { skip: books.length === 0 ? '未设置 DREAM_TAVERN_WORLDS' : false }, () => {
+test('迁移实测：主人的全部世界书都能导入且不丢字段', { skip: books.length === 0 ? '未设置 MODEL_TEST_WORLDS' : false }, () => {
   const failures = [];
   let totalEntries = 0;
   let totalRaw = 0;

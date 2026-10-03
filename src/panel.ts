@@ -1,5 +1,5 @@
 /**
- * 面板贡献 —— 梦境酒馆的界面层。
+ * 面板贡献 —— 模型测试的界面层。
  *
  * 与 `dsh-panel` 宿主的关系：只**提交一份声明**（视图规格 + 动作表），由宿主渲染与派发。
  * 按本仓生态公约**不跨插件导入内部路径**，故此处自带一份最小结构类型（鸭子类型）；
@@ -76,8 +76,8 @@ export function createTavernPanel(deps: TurnDeps): PanelContribution {
   };
 
   return {
-    id: 'dream-tavern',
-    title: '梦境酒馆',
+    id: 'model-test',
+    title: '模型测试',
     order: 35,
     icon: '🎭',
     description: '人物卡文字游戏 + 上下文装配单逐字节可验',

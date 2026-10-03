@@ -39,7 +39,7 @@ if (session === '') {
   console.error('FATAL: 必须给 --session <会话id>')
   process.exit(2)
 }
-const dataDir = resolve(opt('dataDir', join(process.env['DSH_HOME'] ?? '.', 'dream-tavern-data')))
+const dataDir = resolve(opt('dataDir', join(process.env['DSH_HOME'] ?? '.', 'model-test-data')))
 const sessionDir = join(dataDir, 'sessions', session)
 if (!existsSync(sessionDir)) {
   console.error('FATAL: 会话目录不存在: ' + sessionDir)

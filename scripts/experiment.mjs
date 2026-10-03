@@ -13,7 +13,7 @@
  *                    **对照表**（markdown，落到 `<dataDir>/experiments/<name>/REPORT.md`）
  *
  * ## 它**不**做什么（边界，如实声明）
- * - **不调模型**：跑轮次必须走工具面（`tavern_play`），脚本只生成清单与收口。
+ * - **不调模型**：跑轮次必须走工具面（`modeltest_play`），脚本只生成清单与收口。
  *   理由：模型调用是会话的能力，脚本里再开一条通路就等于第二条通往模型的路（违反 A7）。
  * - **不判好坏**：只出读数。内容层判断归作者（`context-effect-research` §七 反定位）。
  *
@@ -106,10 +106,10 @@ const repeats = Number.isInteger(plan.repeats) && plan.repeats > 0 ? plan.repeat
 // ⚠ **顺序：先归一（`E:/x` → `/mnt/e/x`）再 resolve**。反过来时 `resolve('E:/x')` 在 Linux 下
 // 会把 `E:` 当成相对路径段拼到 cwd 上（实测：得到 `<插件目录>/E:/alice/...`），此后归一再也
 // 匹配不到那个形态，于是「缺数据」的假象就出现了。
-// dataDir 的优先级：CLI `--dataDir` > 计划文件里的 `dataDir` > `$DSH_HOME/dream-tavern-data`。
+// dataDir 的优先级：CLI `--dataDir` > 计划文件里的 `dataDir` > `$DSH_HOME/model-test-data`。
 const dataDirRaw = opt('dataDir', typeof plan.dataDir === 'string' && plan.dataDir.trim() !== ''
   ? plan.dataDir
-  : join(process.env['DSH_HOME'] ?? '.', 'dream-tavern-data'))
+  : join(process.env['DSH_HOME'] ?? '.', 'model-test-data'))
 const dataDir = resolve(normalizePath(dataDirRaw))
 const outDir = join(dataDir, 'experiments', plan.name)
 
@@ -133,7 +133,7 @@ function buildRuns() {
           turn: ti + 1,
           input,
           preset: arm.preset,
-          // arm 级 system 追加（可选）：`tavern_play` 的 systemPrompt 参数是**追加一个最高
+          // arm 级 system 追加（可选）：`modeltest_play` 的 systemPrompt 参数是**追加一个最高
           // 优先级 system 块**（不是替换），所以它天然适合做「加一段纪律」这类单变量对照。
           ...(typeof arm.systemPrompt === 'string' && arm.systemPrompt.trim() !== ''
             ? { systemPrompt: arm.systemPrompt }
@@ -154,14 +154,14 @@ if (flag('emit')) {
     process.exit(0)
   }
   console.log(`实验 ${plan.name} · 卡「${plan.cardId}」· ${plan.arms.length} 臂 × ${repeats} 重复 × ${plan.inputs.length} 轮 = ${runs.length} 轮`)
-  console.log('（跑轮次走工具面 `tavern_play`；下面每行就是该轮的参数）\n')
+  console.log('（跑轮次走工具面 `modeltest_play`；下面每行就是该轮的参数）\n')
   let lastSession = ''
   for (const run of runs) {
     if (run.session !== lastSession) {
       lastSession = run.session
       console.log(`── arm=${run.arm}  会话=${run.session} ──`)
     }
-    console.log(`  轮 ${run.turn}: tavern_play { cardId: "${plan.cardId}", session: "${run.session}", preset: "${run.preset}",${run.systemPrompt === undefined ? '' : ' systemPrompt: <arm 追加>, '} input: <第 ${run.turn} 条输入> }`)
+    console.log(`  轮 ${run.turn}: modeltest_play { cardId: "${plan.cardId}", session: "${run.session}", preset: "${run.preset}",${run.systemPrompt === undefined ? '' : ' systemPrompt: <arm 追加>, '} input: <第 ${run.turn} 条输入> }`)
   }
   console.log(`\n跑完后收口：node scripts/experiment.mjs --plan ${planPath} --collect`)
   process.exit(0)

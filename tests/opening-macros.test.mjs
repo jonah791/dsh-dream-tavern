@@ -4,8 +4,8 @@
  * 缺陷（实测）：卡片 `first_mes` 里的 `{{user}}` 以**字面量**进上下文，模型照抄。
  * 两处根因，缺一不可：
  *   · `assemble` 对历史逐字发出，而 `history[0]`（= 卡片开场白）**不走宏渲染**；
- *   · `tavern_assemble` 调 `assemble` 时**漏传 `playerName`** ⇒ 名字到不了渲染器
- *     （`tavern_play` 那条路是传的，两条路不一致）。
+ *   · `modeltest_assemble` 调 `assemble` 时**漏传 `playerName`** ⇒ 名字到不了渲染器
+ *     （`modeltest_play` 那条路是传的，两条路不一致）。
  *
  * 判据（可证伪，含对照组）：
  *   ① 给了名字 ⇒ `history[0]` 的 `{{user}}` 被替换（`{{char}}` 同样）

@@ -18,7 +18,7 @@
  *
  * 跑法：
  *   node scripts/acceptance.mjs
- *   DREAM_TAVERN_CARDS=... DREAM_TAVERN_WORLDS=... node scripts/acceptance.mjs
+ *   MODEL_TEST_CARDS=... MODEL_TEST_WORLDS=... node scripts/acceptance.mjs
  * 退出码：0 = 全判据通过且真数据可达；1 = 测试失败；2 = 测试通过但真数据不可达；3 = 测试器未能启动（仪器问题）。
  */
 import { spawnSync } from 'node:child_process';
@@ -40,10 +40,10 @@ function nativePath(input) {
   return `/mnt/${(match[1] ?? 'c').toLowerCase()}/${(match[2] ?? '').replace(/\\/g, '/')}`;
 }
 
-const cardsDir = nativePath(process.env.DREAM_TAVERN_CARDS ?? DEFAULT_CARDS);
-const worldsDir = nativePath(process.env.DREAM_TAVERN_WORLDS ?? DEFAULT_WORLDS);
+const cardsDir = nativePath(process.env.MODEL_TEST_CARDS ?? DEFAULT_CARDS);
+const worldsDir = nativePath(process.env.MODEL_TEST_WORLDS ?? DEFAULT_WORLDS);
 
-const env = { ...process.env, DREAM_TAVERN_CARDS: cardsDir, DREAM_TAVERN_WORLDS: worldsDir };
+const env = { ...process.env, MODEL_TEST_CARDS: cardsDir, MODEL_TEST_WORLDS: worldsDir };
 
 const TEST_SOURCES = [
   'tests/assemble.test.mjs', 'tests/card.test.mjs', 'tests/lorebook.test.mjs',
@@ -85,7 +85,7 @@ function totalBytes(dir, files) {
 }
 
 console.log('═'.repeat(72));
-console.log('梦境酒馆 · 验收总闸（dsh-dream-tavern）');
+console.log('模型测试 · 验收总闸（dsh-model-test）');
 console.log('═'.repeat(72));
 console.log(`  平台 ${process.platform} · 卡库 ${cardsDir === '' ? '(未配置)' : cardsDir}`);
 console.log(`  世界书 ${worldsDir === '' ? '(未配置)' : worldsDir}`);
@@ -113,11 +113,11 @@ const cards = listFiles(cardsDir, '.png');
 const worlds = listFiles(worldsDir, '.json');
 const realDataReachable = cards !== null && worlds !== null;
 if (cards === null) console.log(cardsDir === ''
-  ? '  卡库：未配置 DREAM_TAVERN_CARDS —— 真数据判据（A5/迁移实测）整组跳过'
+  ? '  卡库：未配置 MODEL_TEST_CARDS —— 真数据判据（A5/迁移实测）整组跳过'
   : `  ⚠ 卡库不可达：${cardsDir} —— 真数据判据（A5/迁移实测）将整组跳过`);
 else console.log(`  卡库：${cards.length} 张 PNG，${(totalBytes(cardsDir, cards) / 1048576).toFixed(1)} MB`);
 if (worlds === null) console.log(worldsDir === ''
-  ? '  世界书：未配置 DREAM_TAVERN_WORLDS —— 世界书迁移实测跳过'
+  ? '  世界书：未配置 MODEL_TEST_WORLDS —— 世界书迁移实测跳过'
   : `  ⚠ 世界书不可达：${worldsDir} —— 世界书迁移实测将跳过`);
 else console.log(`  世界书：${worlds.length} 本，${(totalBytes(worldsDir, worlds) / 1048576).toFixed(1)} MB`);
 

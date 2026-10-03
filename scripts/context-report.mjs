@@ -7,7 +7,7 @@
  *
  * 跑法：
  *   node scripts/context-report.mjs --data <dataDir> <session>
- *   DREAM_TAVERN_DATA=<dataDir> node scripts/context-report.mjs <session>
+ *   MODEL_TEST_DATA=<dataDir> node scripts/context-report.mjs <session>
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -25,7 +25,7 @@ function categoryOf(source) {
 }
 
 const argv = process.argv.slice(2);
-let dataDir = process.env.DREAM_TAVERN_DATA ?? '';
+let dataDir = process.env.MODEL_TEST_DATA ?? '';
 const positional = [];
 for (let i = 0; i < argv.length; i += 1) {
   if (argv[i] === '--data') { dataDir = argv[i + 1] ?? ''; i += 1; continue; }

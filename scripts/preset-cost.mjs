@@ -135,7 +135,7 @@ if (asJson) {
 
 const pct = (n, d) => (d > 0 ? ((n / d) * 100).toFixed(1) : '0.0');
 console.log('═'.repeat(72));
-console.log('梦境酒馆 · 预设块级成本（不调模型）');
+console.log('模型测试 · 预设块级成本（不调模型）');
 console.log('═'.repeat(72));
 console.log(`  预设 ${loaded.preset.name ?? '(无名)'} · 桥接 ${loaded.kind} · blocks=${blocks.length} · 预算 budgetChars=${budget}`);
 console.log('  口径：**预设块正文**（模板未渲染；未含卡片字段 / 世界书 / 历史）');

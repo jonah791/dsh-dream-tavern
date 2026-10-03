@@ -1,7 +1,7 @@
 {
-  "name": "dsh-dream-tavern",
+  "name": "dsh-model-test",
   "version": "0.1.0",
-  "description": "梦境酒馆：DSH 上的文字游戏宿主与上下文编排实验台（装配单逐字节可验）",
+  "description": "模型测试：把「一个模型 + 一套上下文编排」变成可复算的读数——装配单逐字节可验（不调模型也能验）、跑一轮回吐 token/缓存/产出质量、可原子回退。主场是迭代预设与研究上下文内容对模型表现的影响（主人 2026-09-22 定调）。",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

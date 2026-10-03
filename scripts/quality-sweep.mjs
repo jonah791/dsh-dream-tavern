@@ -59,7 +59,7 @@ function nativePath(input) {
   return `/mnt/${(m[1] ?? 'c').toLowerCase()}/${(m[2] ?? '').replace(/\\/g, '/')}`;
 }
 
-const cardsDir = nativePath(process.env.DREAM_TAVERN_CARDS ?? DEFAULT_CARDS);
+const cardsDir = nativePath(process.env.MODEL_TEST_CARDS ?? DEFAULT_CARDS);
 const budget = Number(argValue('--budget') ?? DEFAULT_BUDGET);
 const presetArg = argValue('--preset');
 const normIds = normIdsFor(presetArg);
@@ -91,7 +91,7 @@ function loadPreset(path) {
 }
 
 console.log('═'.repeat(72));
-console.log('梦境酒馆 · 质量判据真实数据扫描（不调模型）');
+console.log('模型测试 · 质量判据真实数据扫描（不调模型）');
 console.log('═'.repeat(72));
 console.log(`  卡库 ${cardsDir}`);
 console.log(`  预算 budgetChars=${budget} · 规范块 ${(normIds.join('/') || '(未指名 ⇒ 本判据不适用)')}`);

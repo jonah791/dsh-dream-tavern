@@ -15,7 +15,7 @@ import { defaultPreset } from '../lib/preset.js';
 import { createTavernPanel } from '../lib/panel.js';
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'dream-tavern-'));
+  const root = mkdtempSync(join(tmpdir(), 'model-test-'));
   const cards = join(root, 'cards');
   const worlds = join(root, 'worlds');
   mkdirSync(cards, { recursive: true });

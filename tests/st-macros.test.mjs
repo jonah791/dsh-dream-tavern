@@ -23,7 +23,7 @@ function pickRoot(winPath) {
   return winPath.replace(/^([A-Za-z]):/, (_, drive) => `/mnt/${drive.toLowerCase()}`);
 }
 
-const PLUGIN = process.env.DSH_DREAM_TAVERN_ROOT ?? pickRoot('E:/alice/self-plugins/dsh-dream-tavern');
+const PLUGIN = process.env.DSH_MODEL_TEST_ROOT ?? pickRoot('E:/alice/self-plugins/dsh-model-test');
 const PRESET_JSON = process.env.DSH_LUST_PRESET ?? pickRoot('E:/alice/tavern/色欲之罪.json');
 const assembleLib = `${PLUGIN}/lib/assemble.js`;
 const stPresetLib = `${PLUGIN}/lib/st-preset.js`;

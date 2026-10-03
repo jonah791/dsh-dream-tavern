@@ -10,8 +10,8 @@ import type { Preset } from './types.ts';
 
 export function defaultPreset(budgetChars: number): Preset {
   return {
-    id: 'dream-tavern-default',
-    name: '梦境酒馆 · 默认',
+    id: 'modeltest-default',
+    name: '模型测试 · 默认',
     budgetChars,
     blocks: [
       {

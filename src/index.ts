@@ -1,5 +1,5 @@
 /**
- * agent-dream-tavern：梦境酒馆宿主插件。
+ * model-test：模型测试宿主插件。
  *
  * 与上游的根本差别不在功能数量，而在**可测量性**：每一次模型请求都由
  * `assemble()` 产出一份「装配单」，落盘后再从磁盘回读校验「发出去的 body
@@ -30,11 +30,11 @@ import type { ChatMessage, Manifest, Preset } from './types.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
-    'agent-dream-tavern': { kind: 'agent-dream-tavern' }
+    'model-test': { kind: 'model-test' }
   }
 }
 
-export const name = 'agent-dream-tavern'
+export const name = 'model-test'
 export const inject = ['tools', 'llm'] as const
 
 export interface Config {
@@ -73,7 +73,7 @@ export interface Config {
 export const Config = z.object({
   enabled: z.boolean().default(true),
   /**
-   * Where we write. Empty ⇒ resolved at load to `<DSH_HOME>/dream-tavern-data`.
+   * Where we write. Empty ⇒ resolved at load to `<DSH_HOME>/model-test-data`.
    * 部署相关取值一律走配置，代码里不留任何一台机器的路径（宿主公约：插件不得硬编码可调项；
    * 且默认值若写死某个人的目录，公开仓库就会连带泄漏他的本机路径）。
    */
@@ -107,7 +107,7 @@ export const Config = z.object({
   retryMax: z.number().default(1),
 })
 
-const PLUGIN = 'agent-dream-tavern'
+const PLUGIN = 'model-test'
 
 /**
  * Model-facing rendering：把已验证的规范值原样交给模型（不截断、不美化）。
@@ -140,7 +140,7 @@ function toHarnessMessages(messages: ChatMessage[], provider: string, model: str
     }
     return createUserMessage({
       content: [{ type: 'text', text: message.text }],
-      source: { kind: 'agent-dream-tavern' },
+      source: { kind: 'model-test' },
     })
   })
 }
@@ -151,19 +151,19 @@ export function apply(ctx: Context, config: Config): void {
   /** Explicit resolve step: the config carries either a deployment value or nothing. */
   const dataDir = config.dataDir.trim().length > 0
     ? config.dataDir.trim()
-    : join(process.env['DSH_HOME'] ?? '.', 'dream-tavern-data')
+    : join(process.env['DSH_HOME'] ?? '.', 'model-test-data')
 
   const cardDirs = config.cardDirs.filter((d) => d.trim().length > 0)
   const worldDirs = config.worldbookDirs.filter((d) => d.trim().length > 0)
   const store = new Store({ dataDir, cardDirs, worldDirs })
   if (cardDirs.length === 0) {
-    logger.warn('未配置 cardDirs：卡库为空，tavern_cards 会如实报 0（请在 cordis.yml 里指向 ST characters/ 目录）')
+    logger.warn('未配置 cardDirs：卡库为空，modeltest_cards 会如实报 0（请在 cordis.yml 里指向 ST characters/ 目录）')
   }
   if (worldDirs.length === 0) {
-    logger.warn('未配置 worldbookDirs：世界书库为空（tavern_worldbooks 会如实报 0）')
+    logger.warn('未配置 worldbookDirs：世界书库为空（modeltest_worldbooks 会如实报 0）')
   }
   if (config.provider.trim().length === 0 || config.model.trim().length === 0) {
-    logger.warn('未配置 provider/model：tavern_play 会在第一轮响亮失败（不猜默认模型）')
+    logger.warn('未配置 provider/model：modeltest_play 会在第一轮响亮失败（不猜默认模型）')
   }
   const presetLogged = new Set<string>()
   const presetCache = new Map<string, Preset>()
@@ -218,7 +218,7 @@ export function apply(ctx: Context, config: Config): void {
   const complete: Completer = async (messages, options) => {
     if (config.provider.trim().length === 0 || config.model.trim().length === 0) {
       // fail loud：不猜默认模型——猜错会静默改变研究结论的可比性
-      throw new Error('未配置 provider/model：请在 cordis.yml 的 agent-dream-tavern.config 里指定')
+      throw new Error('未配置 provider/model：请在 cordis.yml 的 model-test.config 里指定')
     }
     const harnessMessages = toHarnessMessages(messages, config.provider, config.model)
     let text = ''
@@ -286,7 +286,7 @@ export function apply(ctx: Context, config: Config): void {
   const turnDeps = (): TurnDeps => deps
 
   ctx.tools.register(defineTool({
-    name: 'tavern_cards',
+    name: 'modeltest_cards',
     description: '酒馆卡库清点（只读）：列出配置的卡目录里全部人物卡（id/文件名/字节/来源格式）。用于确认迁移源规模与寻址，不读卡内容。',
     parameters: {
       limit: { type: 'number', description: '最多返回多少条（缺省 200）' },
@@ -326,10 +326,10 @@ export function apply(ctx: Context, config: Config): void {
   }))
 
   ctx.tools.register(defineTool({
-    name: 'tavern_card',
+    name: 'modeltest_card',
     description: '读取一张人物卡（只读）：解释后的字段（名称/人设/场景/开场/示例）+ 原始字段名全集 + 文件 sha256。用于迁移核对与开局。',
     parameters: {
-      id: { type: 'string', description: '卡 id 或文件名（来自 tavern_cards）' },
+      id: { type: 'string', description: '卡 id 或文件名（来自 modeltest_cards）' },
     },
     output: {
       render: jsonRender,
@@ -382,7 +382,7 @@ export function apply(ctx: Context, config: Config): void {
   }))
 
   ctx.tools.register(defineTool({
-    name: 'tavern_worldbooks',
+    name: 'modeltest_worldbooks',
     description: '世界书清点/导入（只读源）：不给 name 时列出全部世界书；给 name 时按 ST 格式导入并回报「多少条被解释、多少条跳过、哪些字段未建模但已原样保留」。',
     parameters: {
       name: { type: 'string', description: '世界书名（不含 .json）；缺省=只列清单' },
@@ -429,7 +429,7 @@ export function apply(ctx: Context, config: Config): void {
   }))
 
   ctx.tools.register(defineTool({
-    name: 'tavern_assemble',
+    name: 'modeltest_assemble',
     description: '装配一轮请求并落盘装配单（不调模型）：给卡/会话/输入，产出「哪些片段进哪个槽位、命中什么关键词、各占多少字节」的字节账，并自检「装配单重建的 body 是否逐字节等于将要发出的 body」。',
     parameters: {
       cardId: { type: 'string', description: '卡 id' },
@@ -487,7 +487,7 @@ export function apply(ctx: Context, config: Config): void {
       const { manifest, messages } = assemble({
         preset: preset(args.preset), card: hit.card, lorebook, history, state, turnInput: args.input, turn,
         // 2026-09-23 修复：本条路径原先**漏传** playerName ⇒ 开场白的 `{{user}}` 拿不到名字，
-        // 只能原样保留进上下文。`tavern_play` 那条路是传的（session.ts:217/414），两条必须一致。
+        // 只能原样保留进上下文。`modeltest_play` 那条路是传的（session.ts:217/414），两条必须一致。
         playerName: playerNameFrom(state),
       })
       const manifestPath = await store.writeManifest(sessionId, manifest)
@@ -526,7 +526,7 @@ export function apply(ctx: Context, config: Config): void {
   }))
 
   ctx.tools.register(defineTool({
-    name: 'tavern_play',
+    name: 'modeltest_play',
     description: '玩一轮：装配 → 真实调用模型 → 落盘装配单/历史/快照，并把这一轮的 token 与缓存读数回报。落地后「说出来的上下文」与「装配单记的上下文」必须逐字节一致（判据 A1），否则本轮标记为不一致。',
     parameters: {
       cardId: { type: 'string', description: '卡 id' },
@@ -630,7 +630,7 @@ export function apply(ctx: Context, config: Config): void {
         ...(stateArg === undefined ? {} : { state: stateArg }),
       })
       if (!result.ok) {
-        logger.warn('tavern_play 失败：%s', result.reason)
+        logger.warn('modeltest_play 失败：%s', result.reason)
         // 失败也要把**诊断面**透出去。裸 `fail()` 只给固定字段，会把「哪一轮 / 思维链落在哪个文件 /
         // 结束原因 / 花了多少 token」全部丢掉——而这几项正是事后追因唯一的抓手。
         // 2026-09-23 空正文事故实测：reason 里写着「思维链已落盘供诊断」，但工具返回值里
@@ -685,7 +685,7 @@ export function apply(ctx: Context, config: Config): void {
   }))
 
   ctx.tools.register(defineTool({
-    name: 'tavern_rollback',
+    name: 'modeltest_rollback',
     description: '原子回退：把会话的正文与状态一起还原到第 N 轮的快照（两文件同生共死）。没有完整快照时响亮拒绝，不做部分回退。',
     parameters: {
       session: { type: 'string', description: '会话 id' },
@@ -709,7 +709,7 @@ export function apply(ctx: Context, config: Config): void {
   }))
 
   // 面板是**可选服务**：用 cordis 的等待语义 `ctx.inject`，而非 apply 期一次性 `ctx.get`。
-  // ⚠ 2026-09-22 实测教训：patch 文件里 dsh-panel(242) 排在 dream-tavern(302) **之前**，
+  // ⚠ 2026-09-22 实测教训：patch 文件里 dsh-panel(242) 排在 model-test(302) **之前**，
   // 但加载顺序由依赖图决定 ⇒ apply 期 `ctx.get('panel')` 取不到，贡献**静默丢失**
   // （面板注册表上有宿主自带的 5 个面板、唯独没有我的）。`ctx.inject` 在服务就绪时才回调。
   ctx.inject(['panel'], (panelCtx) => {
@@ -718,11 +718,11 @@ export function apply(ctx: Context, config: Config): void {
       logger.warn('panel 服务已就绪但取不到宿主实例：面板贡献跳过')
       return
     }
-    panelCtx.effect(() => host.register(createTavernPanel(deps)), 'dream-tavern: /panel 贡献')
-    logger.info('面板贡献已注册：id=dream-tavern（/panel → 梦境酒馆）')
+    panelCtx.effect(() => host.register(createTavernPanel(deps)), 'model-test: /panel 贡献')
+    logger.info('面板贡献已注册：id=model-test（/panel → 模型测试）')
   })
 
-  logger.info('梦境酒馆已装载：dataDir=%s cards=%d dirs worlds=%d dirs model=%s/%s',
+  logger.info('模型测试已装载：dataDir=%s cards=%d dirs worlds=%d dirs model=%s/%s',
     config.dataDir, config.cardDirs.length, config.worldbookDirs.length, config.provider, config.model)
 }
 

@@ -1,9 +1,17 @@
-# dsh-dream-tavern（梦境酒馆）
+# dsh-model-test（模型测试）
 
-运行在 DeepSeek Harness 上的文字游戏／角色扮演宿主，**两个并列目的**：
+运行在 DeepSeek Harness 上的**模型测试台**：把「一个模型 + 一套上下文编排」变成**可复算的读数**。
 
-1. **娱乐**：导入手里的 SillyTavern 人物卡，自由游玩或沿剧本推进；
-2. **研究**：作为**上下文编排的可测量实验台**——「上下文对模型表现的影响」的受控实验载体。
+它测的是**模型在给定上下文下的真实表现**——这次请求发出去多少字节、缓存命中多少、一轮回吐
+多少字、结束原因是什么。每一次请求都由纯函数 `assemble()` 产出**装配单**，落盘后从磁盘回读
+校验（判据 A1：实际发出的 body 逐字节等于装配单重建的 body）⇒ **上下文编排的每次变化都是一笔
+可复核的字节账，不是黑箱**。任何「换了编排，模型表现变好」的说法，都必须先过这一关。
+
+> **功能分区（主人 2026-09-22 定调，原话）**：「那他那边就主要满足我的游玩需求，那本地的功能
+> 是用来迭代预设，还有就是研究上下文内容对模型表现的影响」。
+> ⇒ **游玩归 `dsh-profile-tavern`**；**本插件的主场是「迭代预设」与「研究上下文内容对模型表现的
+> 影响」**——即「最优上下文」命题的度量装置。
+> 它技术上仍能跑完整对话（`modeltest_play`），但那**不是它的存在理由，而是它取数的手段**。
 
 > 与上游 `flizzywine/dsh-tavern` 的关系：**独立实现，不 fork**（上游为 AGPL-3.0）。
 > 只借鉴**接口、行为与文件格式**，不复制其源码片段。许可：**MIT**（自持）。
@@ -21,14 +29,14 @@
 
 | 工具 | 意图 |
 |---|---|
-| `tavern_cards` | 卡库清点（只读） |
-| `tavern_card` | 读一张卡的字段与原文键集 |
-| `tavern_worldbooks` | 世界书清点／按 ST 格式导入（只读源） |
-| `tavern_assemble` | 装配一轮并落盘装配单（**不调模型**），返回字节账与 A1 自检 |
-| `tavern_play` | 玩一轮：装配 → 真调模型 → 落盘 → 回报 token/缓存读数 |
-| `tavern_rollback` | 原子回退（正文与状态同生共死；无完整快照则响亮拒绝） |
+| `modeltest_cards` | 卡库清点（只读） |
+| `modeltest_card` | 读一张卡的字段与原文键集 |
+| `modeltest_worldbooks` | 世界书清点／按 ST 格式导入（只读源） |
+| `modeltest_assemble` | 装配一轮并落盘装配单（**不调模型**），返回字节账与 A1 自检 |
+| `modeltest_play` | 玩一轮：装配 → 真调模型 → 落盘 → 回报 token/缓存读数 |
+| `modeltest_rollback` | 原子回退（正文与状态同生共死；无完整快照则响亮拒绝） |
 
-面板（依赖 `dsh-panel` 宿主，缺席时工具面不受影响）：`/panel` → 「梦境酒馆」。
+面板（依赖 `dsh-panel` 宿主，缺席时工具面不受影响）：`/panel` → 「模型测试」。
 面板动作：开局 / 玩一轮 / 行动候选 / 后台结算 / 装配单读数 / 回退。
 
 ## 三个 Agent，职责互斥
@@ -48,10 +56,10 @@
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `dataDir` | `''` | **我们写**的一切（会话/装配单/快照）。空 ⇒ 解析为 `<DSH_HOME>/dream-tavern-data` |
+| `dataDir` | `''` | **我们写**的一切（会话/装配单/快照）。空 ⇒ 解析为 `<DSH_HOME>/model-test-data` |
 | `cardDirs` | `[]` | 只读卡库（ST `characters/` 目录）。空 ⇒ 卡库为 0，工具如实报 0 并告警 |
 | `worldbookDirs` | `[]` | 只读世界书库（ST `worlds/` 目录） |
-| `provider` / `model` | `''` | 模型路由。空 ⇒ `tavern_play` **响亮失败**（不猜默认模型） |
+| `provider` / `model` | `''` | 模型路由。空 ⇒ `modeltest_play` **响亮失败**（不猜默认模型） |
 | `maxTokens` | `1600` | 单轮输出上限 |
 | `temperature` | `0.9` | 采样温度 |
 | `budgetChars` | `24000` | 单次请求字符预算（超出按优先级确定性裁剪并记账） |
@@ -59,8 +67,8 @@
 部署示例（放在 profile patch 里，**不要写进源码**）：
 
 ```yaml
-- id: agent-dream-tavern
-  name: dsh-dream-tavern
+- id: model-test
+  name: dsh-model-test
   config:
     dataDir: <你的数据目录>
     cardDirs: [<你的 ST characters/ 目录>]
@@ -94,7 +102,7 @@ node scripts/turn-report.mjs --session <会话id> --dataDir <dataDir> [--turn N]
 node scripts/export-draft.mjs --session <会话id> --dataDir <dataDir> --reasoning --prose-only
 ```
 
-`tavern_play` 的返回值同样带 `finishKind` / `reasoningChars` / `reasoningPath` / `turnRecordPath`
+`modeltest_play` 的返回值同样带 `finishKind` / `reasoningChars` / `reasoningPath` / `turnRecordPath`
 ——**失败时也带**（空正文判失败但思维链仍落盘：它是唯一诊断证据）。
 
 退出码：`0` 全量通过 ｜ `1` 判据失败 ｜ `2` 判据通过但**真数据不可达**（PASS 降级）。
@@ -151,7 +159,7 @@ node scripts/context-report.mjs --data <dataDir> <session>
 ## 已知限制（诚实边界）
 
 - **推理模型的思维链也算进 `maxTokens`**：实测上限 1600 时 `usage` 报满 1600，而**正文只剩 195 字**
-  就断在句子中间（预算被思维链吃掉）。`tavern_play` 与面板 `play` 动作会返回 `truncated` 标记，
+  就断在句子中间（预算被思维链吃掉）。`modeltest_play` 与面板 `play` 动作会返回 `truncated` 标记，
   **不静默**（判据：`outputTokens >= maxTokens`）。建议 `maxTokens ≥ 3000`。
 - **卡内格式约定会盖过默认预设的格式纪律**：卡的世界书若自带输出模板（如 `<response><now_plot>`），
   模型会照它写——这是酒馆语义下**正确**的行为，但意味着模板类卡不能靠预设纠正格式。
@@ -162,7 +170,7 @@ node scripts/context-report.mjs --data <dataDir> <session>
   这是**跨插件契约**问题（宿主决定超时、贡献方决定耗时），不是酒馆自身的缺陷。
 - **ST 生态广度不追**：MVU / 正则美化 / 小手机 / 生图 / 多平台（Android）**均未实现**。
 - **世界书语义部分建模**：递归控制、冷却/延迟、按角色字段匹配、宏出口、分组评分**共 20 种字段
-  已知未建模**——原样留档在 `raw` 里，`tavern_worldbooks` 会逐项报出，不假装支持。
+  已知未建模**——原样留档在 `raw` 里，`modeltest_worldbooks` 会逐项报出，不假装支持。
 - **结算质量依赖模型**：结算 Agent 要求模型输出 JSON，解析失败即**响亮失败**（不静默吞）。
 - **`data.alternate_greetings`**：目前只取第一个作为回落开场，尚未做多开场切换。
 - **卡内联变量协议不被解析**：部分卡的正文末尾会自带变量更新块（实测见 `<VariableEdit>{...}</VariableEdit>`）。

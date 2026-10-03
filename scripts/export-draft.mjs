@@ -3,7 +3,7 @@
  * export-draft.mjs — 把一次酒馆会话的**模型产出**导出成可分析稿（每轮一个 .md）。
  *
  * ## 为什么要有它（2026-09-23）
- * `tavern_play` 把正文落在 `sessions/<会话>/history.jsonl`（一行 `{role,text}`），
+ * `modeltest_play` 把正文落在 `sessions/<会话>/history.jsonl`（一行 `{role,text}`），
  * 而质量度量装置（`tavern/文风/位格统计/sample_report.py`）吃的是 **.md 稿**。
  * 缺口就在这里：产出→度量之间原先靠**手工导出**，于是「迭代预设」这条环每转一圈都要人手接一次，
  * 且导出口径（取哪几轮、要不要去空白）无记录 ⇒ 两轮读数不可比。
@@ -41,7 +41,7 @@ if (session === '') {
   console.error('FATAL: 必须给 --session <会话id>（会话目录名，见 sessions/ 下）')
   process.exit(2)
 }
-const dataDir = resolve(opt('dataDir', join(process.env['DSH_HOME'] ?? '.', 'dream-tavern-data')))
+const dataDir = resolve(opt('dataDir', join(process.env['DSH_HOME'] ?? '.', 'model-test-data')))
 const sessionDir = join(dataDir, 'sessions', session)
 const historyPath = join(sessionDir, 'history.jsonl')
 

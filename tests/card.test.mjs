@@ -2,10 +2,10 @@
  * A5 — 真实人物卡往返不丢字段。
  *
  * 夹具纪律：**绝不写回主人的卡库**（只读其目录）；且不得依赖运行平台——
- * 卡库路径由环境变量 `DREAM_TAVERN_CARDS` 提供，未设置时整组跳过（不假绿）。
+ * 卡库路径由环境变量 `MODEL_TEST_CARDS` 提供，未设置时整组跳过（不假绿）。
  *
  * 跑法：
- *   DREAM_TAVERN_CARDS="<你的 ST characters/ 目录>" node --test tests/card.test.mjs
+ *   MODEL_TEST_CARDS="<你的 ST characters/ 目录>" node --test tests/card.test.mjs
  *   （WSL 下用 /mnt/c/... 形式；Windows 下用 C:/... 形式）
  */
 import test from 'node:test';
@@ -17,7 +17,7 @@ import { assemble } from '../lib/assemble.js';
 import { defaultPreset } from '../lib/preset.js';
 import { readFileSync } from 'node:fs';
 
-const CARDS_DIR = process.env.DREAM_TAVERN_CARDS ?? '';
+const CARDS_DIR = process.env.MODEL_TEST_CARDS ?? '';
 const realCards = (() => {
   if (!CARDS_DIR) return [];
   try {
@@ -63,7 +63,7 @@ test('合成卡：写入后重读，JSON 完全一致（含中文与多字节）
   assert.equal(count(out2), 1, 'chara 块必须只有一个');
 });
 
-test('A5 真实卡库：全部卡的字段集往返不丢', { skip: realCards.length === 0 ? `未设置 DREAM_TAVERN_CARDS（找到 ${realCards.length} 张）` : false }, () => {
+test('A5 真实卡库：全部卡的字段集往返不丢', { skip: realCards.length === 0 ? `未设置 MODEL_TEST_CARDS（找到 ${realCards.length} 张）` : false }, () => {
   assert.ok(realCards.length > 0, '真实卡库不应为空');
   const failures = [];
   let checked = 0;
@@ -88,7 +88,7 @@ test('A5 真实卡库：全部卡的字段集往返不丢', { skip: realCards.le
   assert.equal(checked, realCards.length);
 });
 
-test('A5 真实卡库：字节往返（写回内存 PNG 后重读一致）', { skip: realCards.length === 0 ? '未设置 DREAM_TAVERN_CARDS' : false }, () => {
+test('A5 真实卡库：字节往返（写回内存 PNG 后重读一致）', { skip: realCards.length === 0 ? '未设置 MODEL_TEST_CARDS' : false }, () => {
   const path = realCards[0];
   const buf = readFileSync(path);
   const raw = readStPng(buf);
@@ -140,7 +140,7 @@ test('卡内世界书坏掉时不阻断读卡，也不假装导入成功', () =>
   assert.equal(parsed.name, '丁');
 });
 
-test('迁移实测：真卡库的内容确实被读到（不是空角色）', { skip: realCards.length === 0 ? '未设置 DREAM_TAVERN_CARDS' : false }, () => {
+test('迁移实测：真卡库的内容确实被读到（不是空角色）', { skip: realCards.length === 0 ? '未设置 MODEL_TEST_CARDS' : false }, () => {
   let withPersona = 0;
   let withOpening = 0;
   let withLorebook = 0;
@@ -166,7 +166,7 @@ test('迁移实测：真卡库的内容确实被读到（不是空角色）', { 
   assert.ok(withOpening >= realCards.length * 0.9, `开场白读出率过低：${withOpening}/${realCards.length}`);
 });
 
-test('迁移实测：每一张真卡都能装配出请求（不抛错、1:1、无重复片段）', { skip: realCards.length === 0 ? '未设置 DREAM_TAVERN_CARDS' : false }, () => {
+test('迁移实测：每一张真卡都能装配出请求（不抛错、1:1、无重复片段）', { skip: realCards.length === 0 ? '未设置 MODEL_TEST_CARDS' : false }, () => {
   const preset = defaultPreset(24000);
   const failures = [];
   let minChars = Number.POSITIVE_INFINITY;

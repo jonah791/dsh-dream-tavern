@@ -13,7 +13,7 @@
  *
  * 跑法：
  *   node scripts/worldbook-sweep.mjs                      # 用默认世界书目录
- *   DREAM_TAVERN_WORLDS="C:/.../worlds" node scripts/worldbook-sweep.mjs --turns 12
+ *   MODEL_TEST_WORLDS="C:/.../worlds" node scripts/worldbook-sweep.mjs --turns 12
  * 退出码：0 = 扫描完成；2 = 世界书目录不可达（不假装通过）。
  */
 import { readdirSync, readFileSync } from 'node:fs';
@@ -40,11 +40,11 @@ function nativePath(input) {
   return `/mnt/${(m[1] ?? 'c').toLowerCase()}/${(m[2] ?? '').replace(/\\/g, '/')}`;
 }
 
-const worldsDir = nativePath(process.env.DREAM_TAVERN_WORLDS ?? DEFAULT_WORLDS);
+const worldsDir = nativePath(process.env.MODEL_TEST_WORLDS ?? DEFAULT_WORLDS);
 const turns = Number(argValue('--turns') ?? 10);
 
 console.log('═'.repeat(72));
-console.log('梦境酒馆 · 独立世界书扫描（关 probability 观测缺口 · 不调模型）');
+console.log('模型测试 · 独立世界书扫描（关 probability 观测缺口 · 不调模型）');
 console.log('═'.repeat(72));
 console.log(`  世界书 ${worldsDir} · 轮次 1..${turns} · 探针 "${PROBE}"`);
 
