@@ -17,14 +17,26 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-/** 路径解析：Windows 形态优先，缺失时回退 WSL 形态（夹具不得依赖运行平台）。 */
+/**
+ * 路径解析：**多候选探测** + Windows 形态优先、缺失时回退 WSL 形态（夹具不得依赖运行平台）。
+ *
+ * ⚠ 2026-10-12 改成多候选：**路径是锚点，不是真源** —— 工作空间七域划分后
+ *   `tavern/` 已搬进 `assets/tavern/`，于是这条测试在 10-12 的全量体检里恒红
+ *   （「缺少真实预设：/mnt/e/alice/tavern/色欲之罪.json」）。硬编码单路径**每次搬迁腐化一次**，
+ *   而腐化的表现是「测试红」——它会混进真红的队列里（**噪音吃掉信号**）。
+ */
 function pickRoot(winPath) {
-  if (existsSync(winPath)) return winPath;
-  return winPath.replace(/^([A-Za-z]):/, (_, drive) => `/mnt/${drive.toLowerCase()}`);
+  const cands = Array.isArray(winPath) ? winPath : [winPath];
+  for (const c of cands) if (existsSync(c)) return c;
+  const first = cands[0];
+  return first.replace(/^([A-Za-z]):/, (_, drive) => `/mnt/${drive.toLowerCase()}`);
 }
 
 const PLUGIN = process.env.DSH_MODEL_TEST_ROOT ?? pickRoot('E:/alice/self-plugins/dsh-model-test');
-const PRESET_JSON = process.env.DSH_LUST_PRESET ?? pickRoot('E:/alice/tavern/色欲之罪.json');
+const PRESET_JSON = process.env.DSH_LUST_PRESET ?? pickRoot([
+  'E:/alice/assets/tavern/色欲之罪.json',
+  'E:/alice/tavern/色欲之罪.json',
+]);
 const assembleLib = `${PLUGIN}/lib/assemble.js`;
 const stPresetLib = `${PLUGIN}/lib/st-preset.js`;
 
