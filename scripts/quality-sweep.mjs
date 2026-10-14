@@ -29,7 +29,7 @@ import { bridgeStPreset } from '../lib/st-preset.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 
-const DEFAULT_CARDS = 'C:/Users/tr/AppData/Roaming/com.tauritavern.client/data/default-user/characters';
+const DEFAULT_CARDS = '<home>/AppData/Roaming/com.tauritavern.client/data/default-user/characters';
 const PROBE_INPUT = '你好。';
 const DEFAULT_BUDGET = 40000;
 

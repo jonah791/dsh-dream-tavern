@@ -25,7 +25,7 @@ import { matchLorebook } from '../lib/lorebook.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 
-const DEFAULT_WORLDS = 'C:/Users/tr/AppData/Roaming/com.tauritavern.client/data/default-user/worlds';
+const DEFAULT_WORLDS = '<home>/AppData/Roaming/com.tauritavern.client/data/default-user/worlds';
 const PROBE = '客栈';
 
 function argValue(flag) {
