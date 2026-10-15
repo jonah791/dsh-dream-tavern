@@ -1,4 +1,21 @@
+<!--
+  DSH 插件生态公约声明（plugin-ecosystem-convention · 组合优先/声明清晰/兼容优先）
+  purpose: 模型测试：把「一个模型 + 一套上下文编排」变成可复算的读数——装配单逐字节可验（不调模型也能验）、跑一轮回吐 token/缓存/产出质量、可原子回退
+  inject: ['tools', 'llm']
+  tools: modeltest_cards,modeltest_card,modeltest_worldbooks,modeltest_assemble,modeltest_play,modeltest_rollback,cardId,input,worldbook,cardId,worldbook
+  runtime: host-only
+  envDeps: 见 README「配置」节
+  boundary: 见 README「设计要点」与「生效判据与回退」节
+  compat: cordis ^4.0.1 / dsh-tools >=0.1.0-rc.6
+-->
 # dsh-model-test（模型测试）
+
+<p align="center">
+  <a href="https://github.com/jonah791/dsh-model-test"><img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version"></a>
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
+  <img src="https://img.shields.io/badge/tests-131%20passed-brightgreen" alt="tests">
+</p>
 
 运行在 DeepSeek Harness 上的**模型测试台**：把「一个模型 + 一套上下文编排」变成**可复算的读数**。
 
@@ -15,6 +32,23 @@
 
 > 与上游 `flizzywine/dsh-tavern` 的关系：**独立实现，不 fork**（上游为 AGPL-3.0）。
 > 只借鉴**接口、行为与文件格式**，不复制其源码片段。许可：**MIT**（自持）。
+
+## 快速开始
+
+**1) 装依赖**（在目标 profile 的 `package.json` 加 link 依赖）：
+
+```jsonc
+"dsh-model-test": "link:E:/alice/self-plugins/dsh-model-test"
+```
+
+**2) 挂组合**：
+
+```yaml
+- id: dsh-model-test
+  name: dsh-model-test
+```
+
+**3) 30 秒验证**：`modeltest_cards` → 应列出可用卡片；`modeltest_assemble` → 应给出逐字节可验的装配单
 
 ## 与其它酒馆的根本差别：装配单
 
@@ -181,3 +215,16 @@ node scripts/context-report.mjs --data <dataDir> <session>
   这是卡自带的 MVU 风格协议，**本插件不消费它**——状态走独立的结算 Agent（面板「后台结算」/
   `runSettlement`），职责互斥（正文不写状态）。因此这类卡的变量不会自动同步；要支持需显式建模该协议。
 - **面板**依赖 `dsh-panel`；未挂载该宿主时没有图形界面（工具面仍可用）。
+
+## 测试
+
+```bash
+cd self-plugins/dsh-model-test && npm test
+```
+
+**131 条用例**（跑一次得到）。
+
+## 相关文档
+
+- [`docs/semantic.md`](docs/semantic.md) —— **权威契约**（定位/反定位 · 验收表）
+- 中心仓：[alice-digital-life](https://github.com/jonah791/alice-digital-life)
